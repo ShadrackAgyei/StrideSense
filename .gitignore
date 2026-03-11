@@ -1,0 +1,64 @@
+# OS / editor junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~
+
+# Logs
+*.log
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Flutter / Dart / Pub
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.fvm/
+.pub/
+.pub-cache/
+build/
+coverage/
+**/doc/api/
+lib/generated_plugin_registrant.dart
+
+# Android (Gradle)
+android/**/.gradle/
+android/**/local.properties
+android/**/key.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# iOS / macOS (Xcode + CocoaPods)
+**/xcuserdata/
+*.xcuserstate
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/ephemeral/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Runner/GeneratedPluginRegistrant.*
+macos/Pods/
+macos/.symlinks/
+macos/Flutter/ephemeral/
+macos/Flutter/Flutter.framework
+macos/Flutter/Flutter.podspec
+macos/Runner/GeneratedPluginRegistrant.*
+
+# Desktop platform ephemeral build outputs
+linux/flutter/ephemeral/
+windows/flutter/ephemeral/
+
+# Release artifacts
+app.*.symbols
+app.*.map.json
+*.so
