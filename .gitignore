@@ -1,0 +1,24 @@
+# Environment files (DO NOT COMMIT)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# PHP / Composer
+vendor/
+
+# Cache / temp
+/cache/
+/tmp/
+
+# Uploads (if any)
+public/uploads/
