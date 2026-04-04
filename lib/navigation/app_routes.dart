@@ -69,9 +69,10 @@ class LogWorkoutArgs {
 }
 
 class WorkoutSummaryArgs {
-  const WorkoutSummaryArgs({required this.originTab});
+  const WorkoutSummaryArgs({required this.originTab, required this.workout});
 
   final AppTab originTab;
+  final WorkoutHistoryItem workout;
 }
 
 class ChallengeDetailArgs {

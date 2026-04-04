@@ -253,7 +253,18 @@ class _LogWorkoutScreenState extends State<LogWorkoutScreen> {
               onPressed: () async {
                 final session = SessionScope.of(context);
                 final completedAt = DateTime.now().toUtc();
-                var syncedToCloud = false;
+                final effectivePaceMinutesPerKm = widget.args.paceMinutesPerKm > 0
+                    ? widget.args.paceMinutesPerKm
+                    : (distance > 0
+                          ? (widget.args.elapsedSeconds / 60) / distance
+                          : 0.0);
+                await session.recordWorkoutLocally(
+                  endedAt: completedAt,
+                  durationSec: widget.args.elapsedSeconds,
+                  distanceKm: distance,
+                  paceMinutesPerKm: effectivePaceMinutesPerKm,
+                  category: _selectedCategory,
+                );
                 if (widget.args.workoutId != null) {
                   try {
                     await session.uploadWorkoutSamples(
@@ -267,10 +278,9 @@ class _LogWorkoutScreenState extends State<LogWorkoutScreen> {
                       endedAt: completedAt,
                       durationSec: widget.args.elapsedSeconds,
                       distanceKm: distance,
-                      paceMinutesPerKm: widget.args.paceMinutesPerKm,
+                      paceMinutesPerKm: effectivePaceMinutesPerKm,
                       category: _selectedCategory,
                     );
-                    syncedToCloud = true;
                   } catch (_) {
                     if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -282,15 +292,6 @@ class _LogWorkoutScreenState extends State<LogWorkoutScreen> {
                       ),
                     );
                   }
-                }
-                if (!syncedToCloud) {
-                  await session.recordWorkoutLocally(
-                    endedAt: completedAt,
-                    durationSec: widget.args.elapsedSeconds,
-                    distanceKm: distance,
-                    paceMinutesPerKm: widget.args.paceMinutesPerKm,
-                    category: _selectedCategory,
-                  );
                 }
                 if (!context.mounted) return;
                 final targetRoute = widget.args.originTab == AppTab.profile
@@ -342,10 +343,26 @@ class WorkoutSummaryScreen extends StatefulWidget {
 }
 
 class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen> {
-  String? _selectedCategory;
-
   @override
   Widget build(BuildContext context) {
+    final workout = widget.args.workout;
+    final distanceKm = workout.distanceM / 1000;
+    final startedAt = workout.startedAt?.toLocal();
+    final pace = _formatPace(workout.avgPaceSecPerKm);
+    final category = workout.category.trim().isNotEmpty
+        ? workout.category.trim()
+        : 'Uncategorized';
+    final dateLabel = startedAt == null
+        ? '--/--/----'
+        : '${startedAt.day}/${startedAt.month}/${startedAt.year}';
+    final timeLabel = startedAt == null
+        ? '--:--'
+        : '${startedAt.hour.toString().padLeft(2, '0')}:${startedAt.minute.toString().padLeft(2, '0')}';
+    final durationLabel = _estimateDuration(
+      workout.distanceM,
+      workout.avgPaceSecPerKm,
+    );
+
     return ShellScaffold(
       title: 'Workout Summary',
       showBack: true,
@@ -355,58 +372,90 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Run completed',
+              'Workout Details',
               style: TextStyle(fontSize: 30, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 8),
-            const Text('Distance: 5.2 km • Time: 45:03 • Avg Pace: 6:30/km'),
-            const SizedBox(height: 16),
-            const Text(
-              'Optional Category',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            Text(
+              '$dateLabel • $timeLabel',
+              style: const TextStyle(color: Colors.black54),
             ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
+            const SizedBox(height: 16),
+            Row(
               children: [
-                for (final label in [
-                  'Interval Training',
-                  'Hill Repeats',
-                  'Long Run',
-                ])
-                  ChoiceChip(
-                    label: Text(label),
-                    selected: _selectedCategory == label,
-                    onSelected: (_) =>
-                        setState(() => _selectedCategory = label),
+                Expanded(
+                  child: _MetricChip(
+                    label: 'Distance',
+                    value: '${distanceKm.toStringAsFixed(2)} km',
                   ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _MetricChip(label: 'Avg Pace', value: pace),
+                ),
               ],
             ),
-            const Spacer(),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: AppPalette.primary,
-                minimumSize: const Size.fromHeight(56),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _MetricChip(
+                    label: 'Duration',
+                    value: durationLabel,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _MetricChip(
+                    label: 'Status',
+                    value: workout.status.toUpperCase(),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF5F7FF),
+                borderRadius: BorderRadius.circular(16),
               ),
-              onPressed: () {
-                final targetRoute = widget.args.originTab == AppTab.profile
-                    ? AppRoutes.profile
-                    : AppRoutes.home;
-                Navigator.pushNamedAndRemoveUntil(
-                  context,
-                  targetRoute,
-                  (_) => false,
-                );
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(const SnackBar(content: Text('Workout saved.')));
-              },
-              child: const Text('Save Workout'),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Category',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    category,
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  String _formatPace(double paceSecPerKm) {
+    if (paceSecPerKm <= 0) return '--:--/km';
+    final totalSeconds = paceSecPerKm.round();
+    final min = totalSeconds ~/ 60;
+    final sec = (totalSeconds % 60).toString().padLeft(2, '0');
+    return '$min:$sec/km';
+  }
+
+  String _estimateDuration(double distanceM, double paceSecPerKm) {
+    if (distanceM <= 0 || paceSecPerKm <= 0) return '--:--';
+    final totalSeconds = ((distanceM / 1000) * paceSecPerKm).round();
+    final minutes = (totalSeconds ~/ 60).toString().padLeft(2, '0');
+    final seconds = (totalSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
   }
 }
 
@@ -1113,8 +1162,35 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       TextButton.icon(
                         onPressed: () async {
                           final picker = ImagePicker();
+                          final source = await showModalBottomSheet<ImageSource>(
+                            context: context,
+                            builder: (context) => SafeArea(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  ListTile(
+                                    leading: const Icon(Icons.camera_alt_outlined),
+                                    title: const Text('Take Photo'),
+                                    onTap: () => Navigator.pop(
+                                      context,
+                                      ImageSource.camera,
+                                    ),
+                                  ),
+                                  ListTile(
+                                    leading: const Icon(Icons.photo_library_outlined),
+                                    title: const Text('Choose from Gallery'),
+                                    onTap: () => Navigator.pop(
+                                      context,
+                                      ImageSource.gallery,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                          if (source == null) return;
                           final picked = await picker.pickImage(
-                            source: ImageSource.gallery,
+                            source: source,
                             maxWidth: 1200,
                             imageQuality: 85,
                           );
@@ -1139,7 +1215,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             _dirty = true;
                           });
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Photo uploaded.')),
+                            SnackBar(
+                              content: Text(
+                                source == ImageSource.camera
+                                    ? 'Photo captured and uploaded.'
+                                    : 'Photo uploaded.',
+                              ),
+                            ),
                           );
                         },
                         icon: const Icon(Icons.photo_camera_outlined),

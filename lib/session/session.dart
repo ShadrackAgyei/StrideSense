@@ -474,6 +474,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> _refreshProfileAndDashboard() async {
+    final localDashboard = await LocalDashboardStore.load();
     final me = await _withAuthRetry(
       (token) => _apiClient.getMe(accessToken: token),
     );
@@ -482,13 +483,50 @@ class SessionController extends ChangeNotifier {
     final history = await _withAuthRetry(
       (token) => _apiClient.getWorkoutHistory(accessToken: token, limit: 50),
     );
+    final mergedWorkouts = _mergeWorkouts(
+      localDashboard.recentWorkouts,
+      history,
+    );
+    final mergedCompleted = mergedWorkouts
+        .where((w) => w.status.toLowerCase() == 'completed')
+        .toList();
+    final mergedDistanceM = mergedCompleted.fold<double>(
+      0,
+      (sum, workout) => sum + workout.distanceM,
+    );
     dashboard = DashboardSummary.fromData(
-      totalDistanceM: me.totalDistanceM,
-      workoutsCount: me.workoutsCount,
-      workouts: history,
+      totalDistanceM: math.max(me.totalDistanceM, mergedDistanceM),
+      workoutsCount: math.max(me.workoutsCount, mergedCompleted.length),
+      workouts: mergedWorkouts,
     );
     await LocalDashboardStore.save(dashboard);
     notifyListeners();
+  }
+
+  List<WorkoutHistoryItem> _mergeWorkouts(
+    List<WorkoutHistoryItem> local,
+    List<WorkoutHistoryItem> remote,
+  ) {
+    final merged = <String, WorkoutHistoryItem>{};
+    for (final workout in [...remote, ...local]) {
+      merged[_workoutKey(workout)] = workout;
+    }
+    final result = merged.values.toList()
+      ..sort((a, b) {
+        final aTime = a.startedAt?.millisecondsSinceEpoch ?? 0;
+        final bTime = b.startedAt?.millisecondsSinceEpoch ?? 0;
+        return bTime.compareTo(aTime);
+      });
+    return result.take(50).toList();
+  }
+
+  String _workoutKey(WorkoutHistoryItem workout) {
+    final startedAt = workout.startedAt?.toUtc().toIso8601String() ?? 'unknown';
+    final distance = workout.distanceM.toStringAsFixed(2);
+    final pace = workout.avgPaceSecPerKm.toStringAsFixed(2);
+    final category = workout.category.trim().toLowerCase();
+    final status = workout.status.trim().toLowerCase();
+    return '$startedAt|$distance|$pace|$category|$status';
   }
 
   Future<T> _withAuthRetry<T>(

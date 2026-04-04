@@ -165,7 +165,17 @@ T _readArgs<T>(Object? raw) {
     return const LogWorkoutArgs(originTab: AppTab.home) as T;
   }
   if (T == WorkoutSummaryArgs) {
-    return const WorkoutSummaryArgs(originTab: AppTab.home) as T;
+    return WorkoutSummaryArgs(
+      originTab: AppTab.home,
+      workout: const WorkoutHistoryItem(
+        id: 0,
+        status: 'completed',
+        startedAt: null,
+        distanceM: 0,
+        avgPaceSecPerKm: 0,
+        category: '',
+      ),
+    ) as T;
   }
   if (T == ChallengeDetailArgs) {
     return const ChallengeDetailArgs(title: 'Challenge') as T;

@@ -227,7 +227,10 @@ class _HomeTabState extends State<HomeTab> {
                 onTap: () => Navigator.pushNamed(
                   context,
                   AppRoutes.workoutSummary,
-                  arguments: const WorkoutSummaryArgs(originTab: AppTab.home),
+                  arguments: WorkoutSummaryArgs(
+                    originTab: AppTab.home,
+                    workout: dashboard.recentWorkouts[i],
+                  ),
                 ),
               ),
               if (i != recentActivities.length - 1) const SizedBox(height: 10),

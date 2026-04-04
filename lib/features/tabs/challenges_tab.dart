@@ -430,7 +430,10 @@ class _RecordTabState extends State<RecordTab> {
               onTap: () => Navigator.pushNamed(
                 context,
                 AppRoutes.workoutSummary,
-                arguments: const WorkoutSummaryArgs(originTab: AppTab.records),
+                arguments: WorkoutSummaryArgs(
+                  originTab: AppTab.records,
+                  workout: workouts[i],
+                ),
               ),
             ),
             if (i != records.length - 1) const SizedBox(height: 10),
