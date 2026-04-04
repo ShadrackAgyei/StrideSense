@@ -8,6 +8,7 @@
 build/
 .dart_tool/
 .packages
+.flutter-plugins-dependencies
 pubspec.lock
 
 # OS / editors

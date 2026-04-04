@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:dio/dio.dart';
@@ -11,6 +12,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 
 part 'navigation/app_core.dart';
@@ -25,6 +27,22 @@ part 'features/tabs/community_tab.dart';
 part 'features/tabs/profile_tab.dart';
 part 'features/details/detail_screens.dart';
 
-void main() {
+const _supabaseUrl = String.fromEnvironment('SUPABASE_URL', defaultValue: '');
+const _supabaseAnonKey = String.fromEnvironment(
+  'SUPABASE_ANON_KEY',
+  defaultValue: '',
+);
+
+SupabaseClient get supabase => Supabase.instance.client;
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  if (_supabaseUrl.isEmpty || _supabaseAnonKey.isEmpty) {
+    throw StateError(
+      'Missing Supabase config. Run with --dart-define=SUPABASE_URL=... '
+      '--dart-define=SUPABASE_ANON_KEY=...',
+    );
+  }
+  await Supabase.initialize(url: _supabaseUrl, anonKey: _supabaseAnonKey);
   runApp(const StrideSenseApp());
 }

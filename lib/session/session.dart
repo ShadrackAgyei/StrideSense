@@ -105,12 +105,9 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> logout() async {
-    final refreshToken = _tokens?.refreshToken;
-    if (refreshToken != null && refreshToken.isNotEmpty) {
-      try {
-        await _apiClient.logout(refreshToken: refreshToken);
-      } catch (_) {}
-    }
+    try {
+      await _apiClient.logout();
+    } catch (_) {}
     await AuthTokenStore.clear();
     _syncWorker.stop();
     _tokens = null;
@@ -427,7 +424,7 @@ class SessionController extends ChangeNotifier {
     dashboard = cachedDashboard;
     notifyListeners();
 
-    final tokens = await AuthTokenStore.read();
+    final tokens = _apiClient.currentTokens() ?? await AuthTokenStore.read();
     if (tokens == null) {
       if (isAuthenticated) {
         isBootstrapping = false;
@@ -497,15 +494,24 @@ class SessionController extends ChangeNotifier {
   Future<T> _withAuthRetry<T>(
     Future<T> Function(String accessToken) action,
   ) async {
-    final tokens = _tokens;
+    final tokens = _apiClient.currentTokens() ?? _tokens;
     if (tokens == null) throw StateError('Not authenticated');
+    _tokens = tokens;
     try {
       return await action(tokens.accessToken);
-    } on DioException catch (e) {
-      if (e.response?.statusCode != 401) rethrow;
-      final refreshed = await _apiClient.refresh(
-        refreshToken: tokens.refreshToken,
-      );
+    } on AuthException {
+      final refreshed = await _apiClient.refresh();
+      _tokens = refreshed;
+      await AuthTokenStore.write(refreshed);
+      return action(refreshed.accessToken);
+    } on PostgrestException catch (e) {
+      final message = (e.message).toLowerCase();
+      final looksAuthRelated =
+          message.contains('jwt') ||
+          message.contains('token') ||
+          message.contains('auth');
+      if (!looksAuthRelated) rethrow;
+      final refreshed = await _apiClient.refresh();
       _tokens = refreshed;
       await AuthTokenStore.write(refreshed);
       return action(refreshed.accessToken);
@@ -634,7 +640,7 @@ class LeaderboardEntry {
     required this.activeDays,
   });
 
-  final int userId;
+  final String userId;
   final String displayName;
   final double totalDistanceM;
   final double avgPaceSecPerKm;
@@ -642,7 +648,7 @@ class LeaderboardEntry {
 
   static LeaderboardEntry fromJson(Map<String, dynamic> json) {
     return LeaderboardEntry(
-      userId: _asInt(json['user_id']),
+      userId: (json['user_id'] as String?) ?? '',
       displayName: (json['display_name'] as String?) ?? 'Runner',
       totalDistanceM: _asDouble(json['total_distance_m']),
       avgPaceSecPerKm: _asDouble(json['avg_pace_sec_per_km']),
@@ -951,23 +957,17 @@ class LocalDashboardStore {
 }
 
 class BackendApiClient {
-  BackendApiClient({String? baseUrl})
-    : _dio = Dio(
-        BaseOptions(
-          baseUrl: baseUrl ?? _resolveBaseUrl(),
-          connectTimeout: const Duration(seconds: 12),
-          receiveTimeout: const Duration(seconds: 20),
-          sendTimeout: const Duration(seconds: 20),
-        ),
-      );
+  BackendApiClient();
 
-  final Dio _dio;
   final Uuid _uuid = const Uuid();
 
-  static String _resolveBaseUrl() {
-    const fromEnv = String.fromEnvironment('API_BASE_URL', defaultValue: '');
-    if (fromEnv.isNotEmpty) return fromEnv;
-    return 'http://169.239.251.102:280/~shadrack.nti/api/v1';
+  AuthTokens? currentTokens() {
+    final session = supabase.auth.currentSession;
+    if (session == null) return null;
+    return AuthTokens(
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken ?? '',
+    );
   }
 
   Future<AuthSession> register({
@@ -977,54 +977,66 @@ class BackendApiClient {
     required String lastName,
     required String phone,
   }) async {
-    final res = await _dio.post(
-      '/auth/register',
+    final response = await supabase.auth.signUp(
+      email: email,
+      password: password,
       data: {
-        'email': email,
-        'password': password,
         'first_name': firstName,
         'last_name': lastName,
         'phone': phone,
       },
     );
-    return _authSessionFromResponse(res);
+    var session = response.session;
+    if (session == null) {
+      final signIn = await supabase.auth.signInWithPassword(
+        email: email,
+        password: password,
+      );
+      session = signIn.session;
+    }
+    if (session == null) {
+      throw const AuthException(
+        'Sign up succeeded, but no session was returned. Disable email confirmation for now or add a verification flow.',
+      );
+    }
+    return _authSessionFromSession(session);
   }
 
   Future<AuthSession> login({
     required String email,
     required String password,
   }) async {
-    final res = await _dio.post(
-      '/auth/login',
-      data: {'email': email, 'password': password},
+    final response = await supabase.auth.signInWithPassword(
+      email: email,
+      password: password,
     );
-    return _authSessionFromResponse(res);
+    final session = response.session;
+    if (session == null) {
+      throw const AuthException('Login did not return a session.');
+    }
+    return _authSessionFromSession(session);
   }
 
-  Future<AuthTokens> refresh({required String refreshToken}) async {
-    final res = await _dio.post(
-      '/auth/refresh',
-      data: {'refresh_token': refreshToken},
+  Future<AuthTokens> refresh() async {
+    final response = await supabase.auth.refreshSession();
+    final session = response.session ?? supabase.auth.currentSession;
+    if (session == null) {
+      throw const AuthException('Unable to refresh the current session.');
+    }
+    return AuthTokens(
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken ?? '',
     );
-    final data = _extractData(res);
-    final rawTokens =
-        (data['tokens'] as Map?)?.cast<String, dynamic>() ?? const {};
-    return AuthTokens.fromJson(rawTokens);
   }
 
-  Future<void> logout({required String refreshToken}) async {
-    await _dio.post('/auth/logout', data: {'refresh_token': refreshToken});
+  Future<void> logout() async {
+    await supabase.auth.signOut();
   }
 
   Future<MeResponse> getMe({required String accessToken}) async {
-    final res = await _dio.get(
-      '/me',
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
-    final data = _extractData(res);
-    final user = (data['user'] as Map?)?.cast<String, dynamic>() ?? const {};
-    final stats = (data['stats'] as Map?)?.cast<String, dynamic>() ?? const {};
-    final profile = _profileFromServer(user);
+    final user = _requireUser();
+    final profile = await _loadProfile(user.id);
+    final stats = await _loadCurrentUserDashboard();
     return MeResponse(
       profile: profile,
       totalDistanceM: _asDouble(stats['total_distance_m']),
@@ -1036,37 +1048,53 @@ class BackendApiClient {
     required String accessToken,
     required ProfileData profile,
   }) async {
-    final res = await _dio.patch(
-      '/me/profile',
-      data: {
-        'first_name': profile.firstName,
-        'last_name': profile.lastName,
-        'phone': profile.phone,
-        'bio': profile.bio,
-        'city': profile.location,
-        if (profile.avatarUrl.isNotEmpty) 'avatar_url': profile.avatarUrl,
-      },
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
+    final user = _requireUser();
+    await supabase.from('profiles').upsert({
+      'id': user.id,
+      'first_name': profile.firstName,
+      'last_name': profile.lastName,
+      'bio': profile.bio,
+      'city': profile.location,
+      'avatar_url': profile.avatarUrl.isNotEmpty ? profile.avatarUrl : null,
+    });
+    await supabase.from('private_user_data').upsert({
+      'user_id': user.id,
+      'email': user.email ?? profile.email,
+      'phone': profile.phone,
+    });
+    if ((user.email ?? '').isNotEmpty &&
+        (profile.email.isNotEmpty && profile.email != user.email)) {
+      await supabase.auth.updateUser(UserAttributes(email: profile.email));
+    }
+    await supabase.auth.updateUser(
+      UserAttributes(
+        data: {
+          'first_name': profile.firstName,
+          'last_name': profile.lastName,
+          'phone': profile.phone,
+        },
+      ),
     );
-    final data = _extractData(res);
-    final user = (data['user'] as Map?)?.cast<String, dynamic>() ?? const {};
-    return _profileFromServer(user);
+    return _loadProfile(user.id);
   }
 
   Future<String> uploadAvatar({
     required String accessToken,
     required XFile file,
   }) async {
-    final form = FormData.fromMap({
-      'avatar': await MultipartFile.fromFile(file.path, filename: file.name),
-    });
-    final res = await _dio.post(
-      '/me/avatar',
-      data: form,
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
+    final user = _requireUser();
+    final ext = file.name.contains('.') ? file.name.split('.').last : 'jpg';
+    final path = '${user.id}/${_uuid.v4()}.$ext';
+    await supabase.storage.from('avatars').upload(
+      path,
+      File(file.path),
+      fileOptions: const FileOptions(upsert: true),
     );
-    final data = _extractData(res);
-    return (data['avatar_url'] as String?) ?? '';
+    final avatarUrl = supabase.storage.from('avatars').getPublicUrl(path);
+    await supabase
+        .from('profiles')
+        .update({'avatar_url': avatarUrl}).eq('id', user.id);
+    return avatarUrl;
   }
 
   Future<int> startWorkout({
@@ -1074,18 +1102,23 @@ class BackendApiClient {
     required DateTime startedAt,
     required String activityType,
   }) async {
-    final res = await _dio.post(
-      '/workouts/start',
-      data: {
+    final user = _requireUser();
+    final workout = await supabase
+        .from('workouts')
+        .insert({
+          'user_id': user.id,
+          'started_at': startedAt.toUtc().toIso8601String(),
+          'activity_type': activityType,
+          'source': 'mobile',
+        })
+        .select()
+        .single();
+    await supabase.from('workout_events').insert({
+      'workout_id': workout['id'],
+      'event_type': 'start',
         'started_at': startedAt.toUtc().toIso8601String(),
-        'activity_type': activityType,
-        'source': 'mobile',
-      },
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
-    final data = _extractData(res);
-    final workout =
-        (data['workout'] as Map?)?.cast<String, dynamic>() ?? const {};
+      'event_at': startedAt.toUtc().toIso8601String(),
+    });
     return _asInt(workout['id']);
   }
 
@@ -1094,11 +1127,14 @@ class BackendApiClient {
     required int workoutId,
     required DateTime pausedAt,
   }) async {
-    await _dio.post(
-      '/workouts/$workoutId/pause',
-      data: {'paused_at': pausedAt.toUtc().toIso8601String()},
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
+    await supabase
+        .from('workouts')
+        .update({'status': 'paused'}).eq('id', workoutId);
+    await supabase.from('workout_events').insert({
+      'workout_id': workoutId,
+      'event_type': 'pause',
+      'event_at': pausedAt.toUtc().toIso8601String(),
+    });
   }
 
   Future<void> resumeWorkout({
@@ -1106,11 +1142,14 @@ class BackendApiClient {
     required int workoutId,
     required DateTime resumedAt,
   }) async {
-    await _dio.post(
-      '/workouts/$workoutId/resume',
-      data: {'resumed_at': resumedAt.toUtc().toIso8601String()},
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
+    await supabase
+        .from('workouts')
+        .update({'status': 'running'}).eq('id', workoutId);
+    await supabase.from('workout_events').insert({
+      'workout_id': workoutId,
+      'event_type': 'resume',
+      'event_at': resumedAt.toUtc().toIso8601String(),
+    });
   }
 
   Future<void> uploadWorkoutSamples({
@@ -1118,16 +1157,23 @@ class BackendApiClient {
     required int workoutId,
     required List<Map<String, dynamic>> samples,
   }) async {
-    await _dio.post(
-      '/workouts/$workoutId/samples',
-      data: {'samples': samples},
-      options: Options(
-        headers: {
-          'Authorization': 'Bearer $accessToken',
-          'Idempotency-Key': _uuid.v4(),
-        },
-      ),
-    );
+    if (samples.isEmpty) return;
+    final normalized = samples.map((sample) {
+      return {
+        'workout_id': workoutId,
+        'captured_at': sample['captured_at'],
+        'latitude': sample['latitude'],
+        'longitude': sample['longitude'],
+        'altitude_m': sample['altitude_m'],
+        'distance_m': sample['distance_m'],
+        'pace_sec_per_km': sample['pace_sec_per_km'],
+        'heart_rate_bpm': sample['heart_rate_bpm'],
+        'steps': sample['steps'],
+        'calories_kcal': sample['calories_kcal'],
+        'source': sample['source'] ?? 'gps',
+      };
+    }).toList();
+    await supabase.from('workout_samples').insert(normalized);
   }
 
   Future<void> completeWorkout({
@@ -1139,30 +1185,35 @@ class BackendApiClient {
     required double avgPaceSecPerKm,
     String? category,
   }) async {
-    await _dio.post(
-      '/workouts/$workoutId/complete',
-      data: {
-        'ended_at': endedAt.toUtc().toIso8601String(),
-        'duration_sec': durationSec,
-        'distance_m': distanceM,
-        'avg_pace_sec_per_km': avgPaceSecPerKm,
-        'category': category,
-      },
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
+    await supabase
+        .from('workouts')
+        .update({
+          'status': 'completed',
+          'ended_at': endedAt.toUtc().toIso8601String(),
+          'duration_sec': durationSec,
+          'distance_m': distanceM,
+          'avg_pace_sec_per_km': avgPaceSecPerKm,
+          'category': category,
+        })
+        .eq('id', workoutId);
+    await supabase.from('workout_events').insert({
+      'workout_id': workoutId,
+      'event_type': 'complete',
+      'event_at': endedAt.toUtc().toIso8601String(),
+    });
   }
 
   Future<List<WorkoutHistoryItem>> getWorkoutHistory({
     required String accessToken,
     int limit = 20,
   }) async {
-    final res = await _dio.get(
-      '/workouts/history',
-      queryParameters: {'page': 1, 'limit': limit},
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
-    final data = _extractData(res);
-    final list = (data['workouts'] as List?) ?? const [];
+    final user = _requireUser();
+    final list = await supabase
+        .from('workouts')
+        .select()
+        .eq('user_id', user.id)
+        .order('started_at', ascending: false)
+        .limit(limit);
     return list
         .whereType<Map>()
         .map((e) => WorkoutHistoryItem.fromJson(e.cast<String, dynamic>()))
@@ -1173,17 +1224,11 @@ class BackendApiClient {
     required String accessToken,
     required String period,
   }) async {
-    final res = await _dio.get(
-      '/leaderboard',
-      queryParameters: {
-        'period': period,
-        'scope': 'global',
-        'metric': 'distance',
-      },
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
+    final result = await supabase.rpc(
+      'leaderboard_distance',
+      params: {'period': period},
     );
-    final data = _extractData(res);
-    final list = (data['entries'] as List?) ?? const [];
+    final list = result is List ? result : const [];
     return list
         .whereType<Map>()
         .map((e) => LeaderboardEntry.fromJson(e.cast<String, dynamic>()))
@@ -1193,16 +1238,27 @@ class BackendApiClient {
   Future<List<ChallengeSummary>> getChallenges({
     required String accessToken,
   }) async {
-    final res = await _dio.get(
-      '/challenges',
-      queryParameters: {'status': 'active'},
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
-    final data = _extractData(res);
-    final list = (data['challenges'] as List?) ?? const [];
+    final user = _requireUser();
+    final list = await supabase
+        .from('challenges')
+        .select()
+        .eq('status', 'active')
+        .order('start_at');
+    final joinedRows = await supabase
+        .from('challenge_participants')
+        .select('challenge_id')
+        .eq('user_id', user.id);
+    final joinedIds = joinedRows
+        .whereType<Map>()
+        .map((e) => _asInt(e['challenge_id']))
+        .toSet();
     return list
         .whereType<Map>()
-        .map((e) => ChallengeSummary.fromJson(e.cast<String, dynamic>()))
+        .map((e) {
+          final row = e.cast<String, dynamic>();
+          row['joined'] = joinedIds.contains(_asInt(row['id']));
+          return ChallengeSummary.fromJson(row);
+        })
         .toList();
   }
 
@@ -1210,37 +1266,59 @@ class BackendApiClient {
     required String accessToken,
     required int challengeId,
   }) async {
-    await _dio.post(
-      '/challenges/$challengeId/join',
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
+    final user = _requireUser();
+    await supabase.from('challenge_participants').insert({
+      'challenge_id': challengeId,
+      'user_id': user.id,
+    });
   }
 
   Future<ChallengeDetails> getChallengeDetail({
     required String accessToken,
     required int challengeId,
   }) async {
-    final res = await _dio.get(
-      '/challenges/$challengeId',
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
-    final data = _extractData(res);
-    final challenge =
-        (data['challenge'] as Map?)?.cast<String, dynamic>() ?? const {};
-    return ChallengeDetails.fromJson(challenge);
+    final user = _requireUser();
+    final challenge = await supabase
+        .from('challenges')
+        .select()
+        .eq('id', challengeId)
+        .single();
+    final joined = await supabase
+        .from('challenge_participants')
+        .select('id')
+        .eq('challenge_id', challengeId)
+        .eq('user_id', user.id)
+        .maybeSingle();
+    final row = challenge.cast<String, dynamic>();
+    row['joined'] = joined != null;
+    return ChallengeDetails.fromJson(row);
   }
 
   Future<List<ClubSummary>> getClubs({required String accessToken}) async {
-    final res = await _dio.get(
-      '/clubs',
-      queryParameters: {'page': 1, 'limit': 50},
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
-    final data = _extractData(res);
-    final list = (data['clubs'] as List?) ?? const [];
+    final user = _requireUser();
+    final list = await supabase.from('clubs').select().order('created_at');
+    final memberRows = await supabase
+        .from('club_members')
+        .select('club_id,user_id');
+    final joinedIds = memberRows
+        .whereType<Map>()
+        .where((row) => row['user_id'] == user.id)
+        .map((row) => _asInt(row['club_id']))
+        .toSet();
+    final counts = <int, int>{};
+    for (final row in memberRows.whereType<Map>()) {
+      final clubId = _asInt(row['club_id']);
+      counts[clubId] = (counts[clubId] ?? 0) + 1;
+    }
     return list
         .whereType<Map>()
-        .map((e) => ClubSummary.fromJson(e.cast<String, dynamic>()))
+        .map((e) {
+          final row = e.cast<String, dynamic>();
+          final id = _asInt(row['id']);
+          row['member_count'] = counts[id] ?? 0;
+          row['joined'] = joinedIds.contains(id);
+          return ClubSummary.fromJson(row);
+        })
         .toList();
   }
 
@@ -1248,23 +1326,29 @@ class BackendApiClient {
     required String accessToken,
     required int clubId,
   }) async {
-    await _dio.post(
-      '/clubs/$clubId/join',
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
+    final user = _requireUser();
+    await supabase.from('club_members').insert({
+      'club_id': clubId,
+      'user_id': user.id,
+    });
   }
 
   Future<ClubDetails> getClubDetail({
     required String accessToken,
     required int clubId,
   }) async {
-    final res = await _dio.get(
-      '/clubs/$clubId',
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
-    final data = _extractData(res);
-    final club = (data['club'] as Map?)?.cast<String, dynamic>() ?? const {};
-    return ClubDetails.fromJson(club);
+    final user = _requireUser();
+    final club = await supabase.from('clubs').select().eq('id', clubId).single();
+    final members = await supabase
+        .from('club_members')
+        .select('user_id')
+        .eq('club_id', clubId);
+    final row = club.cast<String, dynamic>();
+    row['member_count'] = members.length;
+    row['joined'] = members
+        .whereType<Map>()
+        .any((member) => member['user_id'] == user.id);
+    return ClubDetails.fromJson(row);
   }
 
   Future<void> createClub({
@@ -1272,32 +1356,73 @@ class BackendApiClient {
     required String name,
     required String description,
   }) async {
-    await _dio.post(
-      '/clubs',
-      data: {'name': name, 'description': description},
-      options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
-    );
+    final user = _requireUser();
+    final club = await supabase
+        .from('clubs')
+        .insert({
+          'name': name,
+          'description': description,
+          'created_by': user.id,
+        })
+        .select()
+        .single();
+    await supabase.from('club_members').insert({
+      'club_id': club['id'],
+      'user_id': user.id,
+      'role': 'owner',
+    });
   }
 
-  AuthSession _authSessionFromResponse(Response<dynamic> res) {
-    final data = _extractData(res);
-    final user = (data['user'] as Map?)?.cast<String, dynamic>() ?? const {};
-    final tokens =
-        (data['tokens'] as Map?)?.cast<String, dynamic>() ?? const {};
+  AuthSession _authSessionFromSession(Session session) {
+    final user = session.user;
     return AuthSession(
-      tokens: AuthTokens.fromJson(tokens),
-      profile: _profileFromServer(user),
+      tokens: AuthTokens(
+        accessToken: session.accessToken,
+        refreshToken: session.refreshToken ?? '',
+      ),
+      profile: ProfileData.defaults.copyWith(
+        firstName: (user.userMetadata?['first_name'] as String?) ?? '',
+        lastName: (user.userMetadata?['last_name'] as String?) ?? '',
+        displayName: [
+          (user.userMetadata?['first_name'] as String?) ?? '',
+          (user.userMetadata?['last_name'] as String?) ?? '',
+        ].join(' ').trim(),
+        username: _usernameFromServer({
+          'id': user.id,
+          'email': user.email,
+        }),
+        email: user.email ?? '',
+        phone: (user.userMetadata?['phone'] as String?) ?? '',
+        dirty: false,
+      ),
     );
   }
 
-  Map<String, dynamic> _extractData(Response<dynamic> res) {
-    final raw = res.data;
-    if (raw is! Map) return const {};
-    final root = raw.cast<String, dynamic>();
-    final data = root['data'];
-    if (data is Map<String, dynamic>) return data;
-    if (data is Map) return data.cast<String, dynamic>();
-    return const {};
+  Future<ProfileData> _loadProfile(String userId) async {
+    final authUser = _requireUser();
+    final profileRow = await supabase
+        .from('profiles')
+        .select()
+        .eq('id', userId)
+        .maybeSingle();
+    final privateRow = await supabase
+        .from('private_user_data')
+        .select()
+        .eq('user_id', userId)
+        .maybeSingle();
+    final profileMap = profileRow is Map
+        ? Map<String, dynamic>.from(profileRow as Map)
+        : const <String, dynamic>{};
+    final privateMap = privateRow is Map
+        ? Map<String, dynamic>.from(privateRow as Map)
+        : const <String, dynamic>{};
+    final merged = <String, dynamic>{
+      'id': authUser.id,
+      'email': authUser.email ?? '',
+      ...profileMap,
+      ...privateMap,
+    };
+    return _profileFromServer(merged);
   }
 
   ProfileData _profileFromServer(Map<String, dynamic> user) {
@@ -1334,7 +1459,28 @@ class BackendApiClient {
     }
     final id = (user['id'] as num?)?.toInt();
     if (id != null && id > 0) return 'runner$id';
+    final uuid = (user['id'] as String?)?.trim() ?? '';
+    if (uuid.isNotEmpty) return 'runner_${uuid.substring(0, math.min(8, uuid.length))}';
     return '';
+  }
+
+  User _requireUser() {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      throw const AuthException('Not authenticated.');
+    }
+    return user;
+  }
+
+  Future<Map<String, dynamic>> _loadCurrentUserDashboard() async {
+    final result = await supabase.rpc('current_user_dashboard');
+    if (result is List && result.isNotEmpty && result.first is Map) {
+      return (result.first as Map).cast<String, dynamic>();
+    }
+    if (result is Map) {
+      return result.cast<String, dynamic>();
+    }
+    return const {'total_distance_m': 0, 'workouts_count': 0};
   }
 }
 
