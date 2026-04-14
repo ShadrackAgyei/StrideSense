@@ -190,6 +190,13 @@ class _RecordTabState extends State<RecordTab> {
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
+        await _showPermissionDialog(
+          title: 'Turn on location services',
+          message:
+              'StrideSense needs location services enabled to track your real route. You can turn them on now or continue with a simulated route.',
+          openSettings: Geolocator.openLocationSettings,
+        );
+        if (!mounted) return false;
         setState(() {
           _locationHint =
               'Location services are off. Starting with simulated route.';
@@ -202,12 +209,26 @@ class _RecordTabState extends State<RecordTab> {
         permission = await Geolocator.requestPermission();
       }
       if (permission == LocationPermission.denied) {
+        await _showPermissionDialog(
+          title: 'Location permission needed',
+          message:
+              'Allow location access while using the app so StrideSense can record your run instead of using a simulated route.',
+          openSettings: Geolocator.openAppSettings,
+        );
+        if (!mounted) return false;
         setState(() {
           _locationHint = 'Location permission denied. Using simulated route.';
         });
         return false;
       }
       if (permission == LocationPermission.deniedForever) {
+        await _showPermissionDialog(
+          title: 'Location permission blocked',
+          message:
+              'Location permission is blocked for StrideSense. Open app settings and allow location access to record a live route.',
+          openSettings: Geolocator.openAppSettings,
+        );
+        if (!mounted) return false;
         setState(() {
           _locationHint =
               'Location permission denied forever. Using simulated route.';
@@ -224,6 +245,35 @@ class _RecordTabState extends State<RecordTab> {
       });
       return false;
     }
+  }
+
+  Future<void> _showPermissionDialog({
+    required String title,
+    required String message,
+    required Future<bool> Function() openSettings,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Continue'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppPalette.primary),
+            onPressed: () async {
+              Navigator.pop(context);
+              await openSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _startSimulatedTracking() {

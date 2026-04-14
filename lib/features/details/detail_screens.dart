@@ -1189,11 +1189,31 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             ),
                           );
                           if (source == null) return;
-                          final picked = await picker.pickImage(
-                            source: source,
-                            maxWidth: 1200,
-                            imageQuality: 85,
-                          );
+                          XFile? picked;
+                          try {
+                            picked = await picker.pickImage(
+                              source: source,
+                              maxWidth: 1200,
+                              imageQuality: 85,
+                            );
+                          } on PlatformException catch (e) {
+                            if (!context.mounted) return;
+                            final message = (e.message ?? '').toLowerCase();
+                            final needsPermission =
+                                message.contains('permission') ||
+                                message.contains('access');
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  needsPermission
+                                      ? 'Camera or photo access is required to select a profile picture. Allow it in system settings and try again.'
+                                      : (e.message ??
+                                            'Could not access the camera or photo library.'),
+                                ),
+                              ),
+                            );
+                            return;
+                          }
                           if (picked == null || !context.mounted) return;
                           final avatarUrl = await SessionScope.of(
                             context,

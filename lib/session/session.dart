@@ -462,7 +462,12 @@ class SessionController extends ChangeNotifier {
       _syncWorker.start();
     }
     notifyListeners();
-    await _refreshProfileAndDashboard();
+    try {
+      await _refreshProfileAndDashboard();
+    } catch (e) {
+      lastError = _readError(e);
+      notifyListeners();
+    }
   }
 
   Future<void> _setLocalFallbackAuth() async {
@@ -564,6 +569,16 @@ class SessionController extends ChangeNotifier {
             'Request failed';
       }
       return error.message ?? 'Request failed';
+    }
+    if (error is StorageException) {
+      final message = error.message.toLowerCase();
+      if (message.contains('bucket not found')) {
+        return 'Avatar upload is not configured in Supabase yet. Create/apply the public "avatars" storage bucket migration, then try again.';
+      }
+      return error.message;
+    }
+    if (error is AuthException) {
+      return error.message;
     }
     return error.toString();
   }
@@ -1095,11 +1110,20 @@ class BackendApiClient {
       'city': profile.location,
       'avatar_url': profile.avatarUrl.isNotEmpty ? profile.avatarUrl : null,
     });
-    await supabase.from('private_user_data').upsert({
-      'user_id': user.id,
-      'email': user.email ?? profile.email,
-      'phone': profile.phone,
-    });
+    try {
+      await supabase.from('private_user_data').upsert({
+        'user_id': user.id,
+        'email': user.email ?? profile.email,
+        'phone': profile.phone,
+      });
+    } on PostgrestException catch (e) {
+      if (!_isMissingSchemaObject(
+        e,
+        objectNames: const ['private_user_data'],
+      )) {
+        rethrow;
+      }
+    }
     if ((user.email ?? '').isNotEmpty &&
         (profile.email.isNotEmpty && profile.email != user.email)) {
       await supabase.auth.updateUser(UserAttributes(email: profile.email));
@@ -1123,11 +1147,21 @@ class BackendApiClient {
     final user = _requireUser();
     final ext = file.name.contains('.') ? file.name.split('.').last : 'jpg';
     final path = '${user.id}/${_uuid.v4()}.$ext';
-    await supabase.storage.from('avatars').upload(
-      path,
-      File(file.path),
-      fileOptions: const FileOptions(upsert: true),
-    );
+    try {
+      await supabase.storage.from('avatars').upload(
+        path,
+        File(file.path),
+        fileOptions: const FileOptions(upsert: true),
+      );
+    } on StorageException catch (e) {
+      final message = e.message.toLowerCase();
+      if (message.contains('bucket not found')) {
+        throw const AuthException(
+          'Avatar upload failed because the Supabase "avatars" bucket does not exist. Apply the storage section of the Supabase migration and try again.',
+        );
+      }
+      rethrow;
+    }
     final avatarUrl = supabase.storage.from('avatars').getPublicUrl(path);
     await supabase
         .from('profiles')
@@ -1443,16 +1477,28 @@ class BackendApiClient {
         .select()
         .eq('id', userId)
         .maybeSingle();
-    final privateRow = await supabase
-        .from('private_user_data')
-        .select()
-        .eq('user_id', userId)
-        .maybeSingle();
+    Object? privateRow;
+    try {
+      privateRow = await supabase
+          .from('private_user_data')
+          .select()
+          .eq('user_id', userId)
+          .maybeSingle();
+    } on PostgrestException catch (e) {
+      if (
+          !_isMissingSchemaObject(
+            e,
+            objectNames: const ['private_user_data'],
+          )) {
+        rethrow;
+      }
+      privateRow = null;
+    }
     final profileMap = profileRow is Map
         ? Map<String, dynamic>.from(profileRow as Map)
         : const <String, dynamic>{};
     final privateMap = privateRow is Map
-        ? Map<String, dynamic>.from(privateRow as Map)
+        ? Map<String, dynamic>.from(privateRow)
         : const <String, dynamic>{};
     final merged = <String, dynamic>{
       'id': authUser.id,
@@ -1511,7 +1557,18 @@ class BackendApiClient {
   }
 
   Future<Map<String, dynamic>> _loadCurrentUserDashboard() async {
-    final result = await supabase.rpc('current_user_dashboard');
+    dynamic result;
+    try {
+      result = await supabase.rpc('current_user_dashboard');
+    } on PostgrestException catch (e) {
+      if (!_isMissingSchemaObject(
+        e,
+        objectNames: const ['current_user_dashboard', 'workouts'],
+      )) {
+        rethrow;
+      }
+      return const {'total_distance_m': 0, 'workouts_count': 0};
+    }
     if (result is List && result.isNotEmpty && result.first is Map) {
       return (result.first as Map).cast<String, dynamic>();
     }
@@ -1520,6 +1577,31 @@ class BackendApiClient {
     }
     return const {'total_distance_m': 0, 'workouts_count': 0};
   }
+}
+
+bool _isMissingSchemaObject(
+  PostgrestException e, {
+  required List<String> objectNames,
+}) {
+  final code = (e.code ?? '').trim().toUpperCase();
+  final message = e.message.toLowerCase();
+  final details = (e.details?.toString() ?? '').toLowerCase();
+  if (code == 'PGRST205') {
+    return true;
+  }
+  for (final name in objectNames) {
+    final lower = name.toLowerCase();
+    if (message.contains(lower) || details.contains(lower)) {
+      if (message.contains('could not find') ||
+          message.contains('schema cache') ||
+          details.contains('could not find') ||
+          details.contains('schema cache') ||
+          details.contains('not found')) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 DateTime? _parseServerDate(Object? raw) {

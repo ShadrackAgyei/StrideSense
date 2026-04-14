@@ -27,22 +27,13 @@ part 'features/tabs/community_tab.dart';
 part 'features/tabs/profile_tab.dart';
 part 'features/details/detail_screens.dart';
 
-const _supabaseUrl = String.fromEnvironment('SUPABASE_URL', defaultValue: '');
-const _supabaseAnonKey = String.fromEnvironment(
-  'SUPABASE_ANON_KEY',
-  defaultValue: '',
-);
+const _supabaseUrl = 'https://ymvxdzdyxfgcinwuwckd.supabase.co';
+const _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InltdnhkemR5eGZnY2lud3V3Y2tkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1NDc1MjYsImV4cCI6MjA5MTEyMzUyNn0._Ju0QAmuaQYNgtJ2AKiHIT1CVmbjuzu4z7kWvnquAaE';
 
 SupabaseClient get supabase => Supabase.instance.client;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (_supabaseUrl.isEmpty || _supabaseAnonKey.isEmpty) {
-    throw StateError(
-      'Missing Supabase config. Run with --dart-define=SUPABASE_URL=... '
-      '--dart-define=SUPABASE_ANON_KEY=...',
-    );
-  }
   await Supabase.initialize(url: _supabaseUrl, anonKey: _supabaseAnonKey);
   runApp(const StrideSenseApp());
 }
