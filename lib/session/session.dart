@@ -292,12 +292,16 @@ class SessionController extends ChangeNotifier {
   Future<List<LeaderboardEntry>> loadLeaderboard({
     required LeaderboardFilter filter,
   }) async {
-    if (_tokens == null) return const [];
+    if (!isAuthenticated) return const [];
     try {
       return await _withAuthRetry(
         (token) => _apiClient.getLeaderboard(
           accessToken: token,
-          period: filter == LeaderboardFilter.weekly ? 'weekly' : 'monthly',
+          period: filter == LeaderboardFilter.weekly
+              ? 'weekly'
+              : filter == LeaderboardFilter.monthly
+                  ? 'monthly'
+                  : 'all',
         ),
       );
     } catch (e) {
@@ -308,7 +312,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<List<ChallengeSummary>> loadChallenges() async {
-    if (_tokens == null) return const [];
+    if (!isAuthenticated) return const [];
     try {
       return await _withAuthRetry(
         (token) => _apiClient.getChallenges(accessToken: token),
@@ -321,7 +325,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<ChallengeDetails?> loadChallengeDetail(int challengeId) async {
-    if (_tokens == null) return null;
+    if (!isAuthenticated) return null;
     try {
       return await _withAuthRetry(
         (token) => _apiClient.getChallengeDetail(
@@ -337,7 +341,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<List<ClubSummary>> loadClubs() async {
-    if (_tokens == null) return const [];
+    if (!isAuthenticated) return const [];
     try {
       return await _withAuthRetry(
         (token) => _apiClient.getClubs(accessToken: token),
@@ -350,7 +354,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<ClubDetails?> loadClubDetail(int clubId) async {
-    if (_tokens == null) return null;
+    if (!isAuthenticated) return null;
     try {
       return await _withAuthRetry(
         (token) => _apiClient.getClubDetail(accessToken: token, clubId: clubId),
@@ -363,7 +367,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<bool> joinChallenge(int challengeId) async {
-    if (_tokens == null) return false;
+    if (!isAuthenticated) return false;
     try {
       await _withAuthRetry(
         (token) => _apiClient.joinChallenge(
@@ -380,7 +384,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<bool> joinClub(int clubId) async {
-    if (_tokens == null) return false;
+    if (!isAuthenticated) return false;
     try {
       await _withAuthRetry(
         (token) => _apiClient.joinClub(accessToken: token, clubId: clubId),
@@ -394,13 +398,42 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<bool> createClub(String name, String description) async {
-    if (_tokens == null) return false;
+    if (!isAuthenticated) return false;
     try {
       await _withAuthRetry(
         (token) => _apiClient.createClub(
           accessToken: token,
           name: name,
           description: description,
+        ),
+      );
+      return true;
+    } catch (e) {
+      lastError = _readError(e);
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> createChallenge({
+    required String title,
+    required String description,
+    required String type,
+    required double targetValue,
+    required DateTime startAt,
+    required DateTime endAt,
+  }) async {
+    if (!isAuthenticated) return false;
+    try {
+      await _withAuthRetry(
+        (token) => _apiClient.createChallenge(
+          accessToken: token,
+          title: title,
+          description: description,
+          type: type,
+          targetValue: targetValue,
+          startAt: startAt,
+          endAt: endAt,
         ),
       );
       return true;
@@ -570,14 +603,23 @@ class SessionController extends ChangeNotifier {
       }
       return error.message ?? 'Request failed';
     }
+    if (error is PostgrestException) {
+      return error.message.isNotEmpty ? error.message : 'Database error occurred';
+    }
     if (error is StorageException) {
       final message = error.message.toLowerCase();
       if (message.contains('bucket not found')) {
-        return 'Avatar upload is not configured in Supabase yet. Create/apply the public "avatars" storage bucket migration, then try again.';
+        return 'Avatar storage is not configured. Ensure the "avatars" bucket and its RLS policies exist in your Supabase project.';
+      }
+      if (message.contains('row level security') || message.contains('policy')) {
+        return 'Permission denied for avatar upload. Check storage RLS policies.';
       }
       return error.message;
     }
     if (error is AuthException) {
+      return error.message;
+    }
+    if (error is StateError) {
       return error.message;
     }
     return error.toString();
@@ -1145,28 +1187,38 @@ class BackendApiClient {
     required XFile file,
   }) async {
     final user = _requireUser();
-    final ext = file.name.contains('.') ? file.name.split('.').last : 'jpg';
+    final ext = (file.name.contains('.') ? file.name.split('.').last : 'jpg').toLowerCase();
     final path = '${user.id}/${_uuid.v4()}.$ext';
-    try {
-      await supabase.storage.from('avatars').upload(
-        path,
-        File(file.path),
-        fileOptions: const FileOptions(upsert: true),
-      );
-    } on StorageException catch (e) {
-      final message = e.message.toLowerCase();
-      if (message.contains('bucket not found')) {
-        throw const AuthException(
-          'Avatar upload failed because the Supabase "avatars" bucket does not exist. Apply the storage section of the Supabase migration and try again.',
-        );
-      }
-      rethrow;
-    }
+    await supabase.storage.from('avatars').upload(
+      path,
+      File(file.path),
+      fileOptions: FileOptions(contentType: _mimeTypeForExt(ext)),
+    );
     final avatarUrl = supabase.storage.from('avatars').getPublicUrl(path);
-    await supabase
-        .from('profiles')
-        .update({'avatar_url': avatarUrl}).eq('id', user.id);
+    await supabase.from('profiles').upsert({
+      'id': user.id,
+      'avatar_url': avatarUrl,
+    });
     return avatarUrl;
+  }
+
+  String _mimeTypeForExt(String ext) {
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
+      case 'heic':
+      case 'heif':
+        return 'image/heic';
+      default:
+        return 'image/jpeg';
+    }
   }
 
   Future<int> startWorkout({
@@ -1188,7 +1240,6 @@ class BackendApiClient {
     await supabase.from('workout_events').insert({
       'workout_id': workout['id'],
       'event_type': 'start',
-        'started_at': startedAt.toUtc().toIso8601String(),
       'event_at': startedAt.toUtc().toIso8601String(),
     });
     return _asInt(workout['id']);
@@ -1445,6 +1496,37 @@ class BackendApiClient {
     });
   }
 
+  Future<void> createChallenge({
+    required String accessToken,
+    required String title,
+    required String description,
+    required String type,
+    required double targetValue,
+    required DateTime startAt,
+    required DateTime endAt,
+  }) async {
+    final user = _requireUser();
+    final challenge = await supabase
+        .from('challenges')
+        .insert({
+          'title': title,
+          'description': description,
+          'type': type,
+          'target_value': targetValue,
+          'start_at': startAt.toUtc().toIso8601String(),
+          'end_at': endAt.toUtc().toIso8601String(),
+          'status': 'active',
+          'created_by': user.id,
+        })
+        .select()
+        .single();
+    // Auto-join the creator
+    await supabase.from('challenge_participants').insert({
+      'challenge_id': challenge['id'],
+      'user_id': user.id,
+    });
+  }
+
   AuthSession _authSessionFromSession(Session session) {
     final user = session.user;
     return AuthSession(
@@ -1472,7 +1554,7 @@ class BackendApiClient {
 
   Future<ProfileData> _loadProfile(String userId) async {
     final authUser = _requireUser();
-    final profileRow = await supabase
+    final rawProfileRow = await supabase
         .from('profiles')
         .select()
         .eq('id', userId)
@@ -1494,17 +1576,39 @@ class BackendApiClient {
       }
       privateRow = null;
     }
-    final profileMap = profileRow is Map
-        ? Map<String, dynamic>.from(profileRow as Map)
+    final profileMap = rawProfileRow is Map
+        ? Map<String, dynamic>.from(rawProfileRow as Map)
         : const <String, dynamic>{};
     final privateMap = privateRow is Map
         ? Map<String, dynamic>.from(privateRow)
         : const <String, dynamic>{};
+    final metadata = authUser.userMetadata ?? const <String, dynamic>{};
+    final firstName =
+        (profileMap['first_name'] as String?)?.trim().isNotEmpty == true
+        ? profileMap['first_name'] as String
+        : (metadata['first_name'] as String?)?.trim() ?? '';
+    final lastName =
+        (profileMap['last_name'] as String?)?.trim().isNotEmpty == true
+        ? profileMap['last_name'] as String
+        : (metadata['last_name'] as String?)?.trim() ?? '';
+    final phone =
+        (privateMap['phone'] as String?)?.trim().isNotEmpty == true
+        ? privateMap['phone'] as String
+        : (metadata['phone'] as String?)?.trim() ?? '';
+    final seededProfileMap = {
+      ...profileMap,
+      if (firstName.isNotEmpty) 'first_name': firstName,
+      if (lastName.isNotEmpty) 'last_name': lastName,
+    };
+    final seededPrivateMap = {
+      ...privateMap,
+      if (phone.isNotEmpty) 'phone': phone,
+    };
     final merged = <String, dynamic>{
       'id': authUser.id,
       'email': authUser.email ?? '',
-      ...profileMap,
-      ...privateMap,
+      ...seededProfileMap,
+      ...seededPrivateMap,
     };
     return _profileFromServer(merged);
   }
@@ -2048,6 +2152,64 @@ class BackendSyncApiClient implements SyncApiClient {
       );
     }
   }
+}
+
+class NotificationService {
+  static bool _ready = false;
+
+  static Future<void> init() async {
+    try {
+      const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+      const ios = DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
+      );
+      await _plugin.initialize(const InitializationSettings(android: android, iOS: ios));
+      _ready = true;
+    } catch (_) {
+      // Plugin not available in this environment
+    }
+  }
+
+  static Future<void> workoutStarted() =>
+      _show(1, 'Workout Started!', 'Your run is being tracked. Keep going!');
+
+  static Future<void> workoutCompleted(double distKm, String pace) =>
+      _show(2, 'Workout Complete!',
+          '${distKm.toStringAsFixed(2)} km · $pace — Great work!');
+
+  static Future<void> challengeJoined(String challengeTitle) =>
+      _show(3, 'Challenge Joined!', 'You\'ve joined "$challengeTitle". Good luck!');
+
+  static Future<void> clubCreated(String clubName) =>
+      _show(4, 'Club Created!', '"$clubName" is live. Invite friends to run together.');
+
+  static Future<void> sendTestNotification() =>
+      _show(99, 'Test Notification', 'StrideSense notifications are working! 🎉');
+
+  static Future<void> _show(int id, String title, String body) async {
+    if (!_ready) return;
+    try {
+      await _plugin.show(
+        id,
+        title,
+        body,
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'stridesense_workouts',
+            'Workout Notifications',
+            channelDescription: 'StrideSense workout and activity updates',
+            importance: Importance.max,
+            priority: Priority.high,
+          ),
+          iOS: DarwinNotificationDetails(),
+        ),
+      );
+    } catch (_) {}
+  }
+
+  static final _plugin = FlutterLocalNotificationsPlugin();
 }
 
 class SyncWorker {

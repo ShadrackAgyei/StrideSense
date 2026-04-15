@@ -12,6 +12,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 
@@ -27,13 +28,14 @@ part 'features/tabs/community_tab.dart';
 part 'features/tabs/profile_tab.dart';
 part 'features/details/detail_screens.dart';
 
-const _supabaseUrl = 'https://ymvxdzdyxfgcinwuwckd.supabase.co';
-const _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InltdnhkemR5eGZnY2lud3V3Y2tkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1NDc1MjYsImV4cCI6MjA5MTEyMzUyNn0._Ju0QAmuaQYNgtJ2AKiHIT1CVmbjuzu4z7kWvnquAaE';
+const _supabaseUrl = 'https://wbqfjhrenpcflvfevqdy.supabase.co';
+const _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndicWZqaHJlbnBjZmx2ZmV2cWR5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYyNzExNjcsImV4cCI6MjA5MTg0NzE2N30.tnSzE6fS5r6__3wYX58uhMOQCDL2uLtiUEMmboCuBDs';
 
 SupabaseClient get supabase => Supabase.instance.client;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: _supabaseUrl, anonKey: _supabaseAnonKey);
+  await NotificationService.init();
   runApp(const StrideSenseApp());
 }

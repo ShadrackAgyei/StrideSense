@@ -30,7 +30,7 @@ class AppPalette {
 
 enum AppTab { home, records, community, profile }
 
-enum LeaderboardFilter { weekly, monthly }
+enum LeaderboardFilter { allTime, weekly, monthly }
 
 enum WorkoutSessionState { idle, running, paused, completed }
 

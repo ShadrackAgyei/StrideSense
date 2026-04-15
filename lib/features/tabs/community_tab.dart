@@ -12,13 +12,21 @@ class _CommunityTabState extends State<CommunityTab> {
   List<ChallengeSummary> _challenges = const [];
   List<ClubSummary> _clubs = const [];
   bool _didLoad = false;
+  bool _wasAuthenticated = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_didLoad) return;
-    _didLoad = true;
-    unawaited(_loadData());
+    final session = SessionScope.of(context);
+    if (!_didLoad) {
+      _didLoad = true;
+      _wasAuthenticated = session.isAuthenticated;
+      unawaited(_loadData());
+    } else if (session.isAuthenticated && !_wasAuthenticated) {
+      // Auth became available after initial load — fetch real data now
+      _wasAuthenticated = true;
+      unawaited(_loadData());
+    }
   }
 
   Future<void> _loadData() async {

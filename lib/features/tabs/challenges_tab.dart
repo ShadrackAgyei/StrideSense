@@ -129,6 +129,7 @@ class _RecordTabState extends State<RecordTab> {
       );
       if (!mounted) return;
       setState(() => _activeWorkoutId = workoutId);
+      unawaited(NotificationService.workoutStarted());
     }
   }
 
@@ -631,23 +632,31 @@ class _ChallengesTabState extends State<ChallengesTab> {
               ),
             ],
           ),
-          if (_clubsSelected)
-            Positioned(
-              bottom: 16,
-              right: 16,
-              child: FloatingActionButton.extended(
-                backgroundColor: AppPalette.primary,
-                foregroundColor: Colors.white,
-                onPressed: () async {
-                  final created = await _showCreateClubDialog(context);
-                  if (created) {
-                    await _loadData();
-                  }
-                },
-                icon: const Icon(Icons.add),
-                label: const Text('Create Club'),
-              ),
-            ),
+          Positioned(
+            bottom: 16,
+            right: 16,
+            child: _clubsSelected
+                ? FloatingActionButton.extended(
+                    backgroundColor: AppPalette.primary,
+                    foregroundColor: Colors.white,
+                    onPressed: () async {
+                      final created = await _showCreateClubDialog(context);
+                      if (created) await _loadData();
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('Create Club'),
+                  )
+                : FloatingActionButton.extended(
+                    backgroundColor: AppPalette.primary,
+                    foregroundColor: Colors.white,
+                    onPressed: () async {
+                      final created = await _showCreateChallengeDialog(context);
+                      if (created) await _loadData();
+                    },
+                    icon: const Icon(Icons.flag_outlined),
+                    label: const Text('New Challenge'),
+                  ),
+          ),
         ],
       ),
     );
@@ -760,6 +769,111 @@ class _ChallengesTabState extends State<ChallengesTab> {
         },
       );
     }).toList();
+  }
+
+  Future<bool> _showCreateChallengeDialog(BuildContext context) async {
+    final titleCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
+    final targetCtrl = TextEditingController(text: '5');
+    String selectedType = 'distance';
+    bool loading = false;
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('New Challenge'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: titleCtrl,
+                  decoration: const InputDecoration(labelText: 'Title'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: descCtrl,
+                  decoration: const InputDecoration(labelText: 'Description'),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('Type:', style: TextStyle(color: Colors.black54)),
+                    const SizedBox(width: 12),
+                    DropdownButton<String>(
+                      value: selectedType,
+                      items: const [
+                        DropdownMenuItem(value: 'distance', child: Text('Distance (km)')),
+                        DropdownMenuItem(value: 'count', child: Text('Count (runs)')),
+                        DropdownMenuItem(value: 'time', child: Text('Time (min)')),
+                      ],
+                      onChanged: (v) {
+                        if (v != null) setDialogState(() => selectedType = v);
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: targetCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    labelText: selectedType == 'distance'
+                        ? 'Target (km)'
+                        : selectedType == 'count'
+                        ? 'Target (runs)'
+                        : 'Target (minutes)',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: loading ? null : () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: loading
+                  ? null
+                  : () async {
+                      final title = titleCtrl.text.trim();
+                      final target = double.tryParse(targetCtrl.text.trim()) ?? 0;
+                      if (title.isEmpty || target <= 0) return;
+                      setDialogState(() => loading = true);
+                      final now = DateTime.now().toUtc();
+                      final ok = await SessionScope.of(ctx).createChallenge(
+                        title: title,
+                        description: descCtrl.text.trim(),
+                        type: selectedType,
+                        targetValue: target,
+                        startAt: now,
+                        endAt: now.add(const Duration(days: 30)),
+                      );
+                      if (!ctx.mounted) return;
+                      if (ok) {
+                        Navigator.pop(dialogContext, true);
+                      } else {
+                        setDialogState(() => loading = false);
+                        ScaffoldMessenger.of(ctx).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              SessionScope.of(ctx).lastError ?? 'Could not create challenge',
+                            ),
+                          ),
+                        );
+                      }
+                    },
+              child: const Text('Create'),
+            ),
+          ],
+        ),
+      ),
+    );
+    titleCtrl.dispose();
+    descCtrl.dispose();
+    targetCtrl.dispose();
+    return created ?? false;
   }
 
   Future<bool> _showCreateClubDialog(BuildContext context) async {

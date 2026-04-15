@@ -10,7 +10,7 @@ class LeaderboardScreen extends StatefulWidget {
 }
 
 class _LeaderboardScreenState extends State<LeaderboardScreen> {
-  LeaderboardFilter _filter = LeaderboardFilter.weekly;
+  LeaderboardFilter _filter = LeaderboardFilter.allTime;
   bool _loading = true;
   List<LeaderboardEntry> _entries = const [];
 
@@ -64,6 +64,17 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             Wrap(
               spacing: 10,
               children: [
+                ChoiceChip(
+                  label: const Text('All Time'),
+                  selected: _filter == LeaderboardFilter.allTime,
+                  onSelected: (_) {
+                    setState(() {
+                      _filter = LeaderboardFilter.allTime;
+                      _loading = true;
+                    });
+                    unawaited(_loadLeaderboard());
+                  },
+                ),
                 ChoiceChip(
                   label: const Text('Weekly'),
                   selected: _filter == LeaderboardFilter.weekly,
@@ -169,18 +180,10 @@ class _LogWorkoutScreenState extends State<LogWorkoutScreen> {
   @override
   Widget build(BuildContext context) {
     final elapsed = _formatDuration(widget.args.elapsedSeconds);
-    final distance = widget.args.distanceKm > 0 ? widget.args.distanceKm : 5.2;
-    final pace = _formatPace(
-      widget.args.paceMinutesPerKm > 0 ? widget.args.paceMinutesPerKm : 6.5,
-    );
+    final distance = widget.args.distanceKm;
+    final pace = _formatPace(widget.args.paceMinutesPerKm);
     final points = widget.args.routePoints.isEmpty
-        ? const [
-            RoutePoint(lat: 5.6037, lng: -0.1870),
-            RoutePoint(lat: 5.6042, lng: -0.1865),
-            RoutePoint(lat: 5.6048, lng: -0.1869),
-            RoutePoint(lat: 5.6054, lng: -0.1860),
-            RoutePoint(lat: 5.6061, lng: -0.1857),
-          ]
+        ? const [RoutePoint(lat: 5.6037, lng: -0.1870)]
         : widget.args.routePoints;
 
     return ShellScaffold(
@@ -253,31 +256,34 @@ class _LogWorkoutScreenState extends State<LogWorkoutScreen> {
               onPressed: () async {
                 final session = SessionScope.of(context);
                 final completedAt = DateTime.now().toUtc();
+                final actualDistance = widget.args.distanceKm;
                 final effectivePaceMinutesPerKm = widget.args.paceMinutesPerKm > 0
                     ? widget.args.paceMinutesPerKm
-                    : (distance > 0
-                          ? (widget.args.elapsedSeconds / 60) / distance
+                    : (actualDistance > 0
+                          ? (widget.args.elapsedSeconds / 60) / actualDistance
                           : 0.0);
                 await session.recordWorkoutLocally(
                   endedAt: completedAt,
                   durationSec: widget.args.elapsedSeconds,
-                  distanceKm: distance,
+                  distanceKm: actualDistance,
                   paceMinutesPerKm: effectivePaceMinutesPerKm,
                   category: _selectedCategory,
                 );
                 if (widget.args.workoutId != null) {
                   try {
-                    await session.uploadWorkoutSamples(
-                      widget.args.workoutId!,
-                      points,
-                      widget.args.elapsedSeconds,
-                      distance,
-                    );
+                    if (widget.args.routePoints.isNotEmpty) {
+                      await session.uploadWorkoutSamples(
+                        widget.args.workoutId!,
+                        widget.args.routePoints,
+                        widget.args.elapsedSeconds,
+                        actualDistance,
+                      );
+                    }
                     await session.completeWorkoutSession(
                       workoutId: widget.args.workoutId!,
                       endedAt: completedAt,
                       durationSec: widget.args.elapsedSeconds,
-                      distanceKm: distance,
+                      distanceKm: actualDistance,
                       paceMinutesPerKm: effectivePaceMinutesPerKm,
                       category: _selectedCategory,
                     );
@@ -293,6 +299,10 @@ class _LogWorkoutScreenState extends State<LogWorkoutScreen> {
                     );
                   }
                 }
+                unawaited(NotificationService.workoutCompleted(
+                  actualDistance,
+                  _formatPace(effectivePaceMinutesPerKm),
+                ));
                 if (!context.mounted) return;
                 final targetRoute = widget.args.originTab == AppTab.profile
                     ? AppRoutes.profile
@@ -1375,6 +1385,16 @@ class NotificationSettingsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          const Text(
+            'Notifications',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Manage how StrideSense alerts you about activity.',
+            style: TextStyle(color: Colors.black54, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 14),
           const _SwitchSettingTile(
             icon: Icons.notifications_active_outlined,
             title: 'Push Notifications',
@@ -1382,16 +1402,74 @@ class NotificationSettingsScreen extends StatelessWidget {
             initialValue: true,
           ),
           const _SwitchSettingTile(
-            icon: Icons.email_outlined,
-            title: 'Email Updates',
-            subtitle: 'Weekly reports and announcements.',
-            initialValue: false,
+            icon: Icons.emoji_events_outlined,
+            title: 'Leaderboard Updates',
+            subtitle: 'Get notified when your rank changes.',
+            initialValue: true,
           ),
           const _SwitchSettingTile(
             icon: Icons.flag_outlined,
             title: 'Challenge Alerts',
             subtitle: 'Progress and invite notifications.',
             initialValue: true,
+          ),
+          const _SwitchSettingTile(
+            icon: Icons.groups_outlined,
+            title: 'Club Activity',
+            subtitle: 'New members and club updates.',
+            initialValue: false,
+          ),
+          const _SwitchSettingTile(
+            icon: Icons.email_outlined,
+            title: 'Email Updates',
+            subtitle: 'Weekly reports and announcements.',
+            initialValue: false,
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF2F5FF),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFD9E0F5)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Test Notifications',
+                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Send a test notification to verify your device is set up correctly.',
+                  style: TextStyle(color: Colors.black54, fontSize: 13),
+                ),
+                const SizedBox(height: 10),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppPalette.primary,
+                    minimumSize: const Size.fromHeight(44),
+                  ),
+                  onPressed: () async {
+                    await NotificationService.sendTestNotification();
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Test notification sent! Check your notification tray.'),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.send_outlined),
+                  label: const Text('Send Test Notification'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Account',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 10),
           ActionTile(
