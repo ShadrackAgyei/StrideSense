@@ -135,19 +135,6 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                       style: const TextStyle(color: Colors.white),
                     ),
                   ),
-                  FilledButton(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF333333),
-                    ),
-                    onPressed: () => Navigator.pushNamed(
-                      context,
-                      AppRoutes.challengeDetail,
-                      arguments: const ChallengeDetailArgs(
-                        title: 'Context Challenge',
-                      ),
-                    ),
-                    child: const Text('Challenge'),
-                  ),
                 ],
               ),
             ),
@@ -696,6 +683,7 @@ class ChallengeDetailScreen extends StatefulWidget {
 class _ChallengeDetailScreenState extends State<ChallengeDetailScreen> {
   bool _loading = false;
   bool _joining = false;
+  bool _completing = false;
   ChallengeDetails? _details;
   String? _error;
 
@@ -774,6 +762,8 @@ class _ChallengeDetailScreenState extends State<ChallengeDetailScreen> {
           endAt: current.endAt,
           status: current.status,
           joined: true,
+          myCompletedAt: current.myCompletedAt,
+          participants: current.participants,
         );
       }
     });
@@ -782,83 +772,234 @@ class _ChallengeDetailScreenState extends State<ChallengeDetailScreen> {
     ).showSnackBar(const SnackBar(content: Text('Challenge joined.')));
   }
 
+  Future<void> _markComplete() async {
+    final challengeId = widget.args.id;
+    if (challengeId == null || _completing) return;
+    setState(() => _completing = true);
+    final session = SessionScope.of(context);
+    final ok = await session.markChallengeCompleted(challengeId);
+    if (!mounted) return;
+    setState(() => _completing = false);
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(session.lastError ?? 'Could not mark complete')),
+      );
+      return;
+    }
+    // Reload to refresh participants list
+    unawaited(_loadDetails());
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Challenge marked as completed!')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final details = _details;
     final joined = details?.joined ?? widget.args.joined;
+    final participants = details?.participants ?? const [];
+    final joinedList = participants.where((p) => !p.completed).toList();
+    final completedList = participants.where((p) => p.completed).toList();
+    final myCompleted = details?.myCompleted ?? false;
+
     return ShellScaffold(
       title: details?.title ?? widget.args.title,
       showBack: true,
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_loading)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 12),
-                child: LinearProgressIndicator(),
-              ),
-            Text(
-              details?.title ?? widget.args.title,
-              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              details?.description.isNotEmpty == true
-                  ? details!.description
-                  : widget.args.description.isNotEmpty
-                  ? widget.args.description
-                  : 'Challenge details',
-            ),
-            if (_error != null) ...[
-              const SizedBox(height: 10),
-              Text(_error!, style: const TextStyle(color: Colors.redAccent)),
-            ],
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(16),
               children: [
-                _detailChip(
-                  'Status',
-                  (details?.status.isNotEmpty ?? false)
-                      ? details!.status
-                      : 'active',
+                if (_loading)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 12),
+                    child: LinearProgressIndicator(),
+                  ),
+                Text(
+                  details?.title ?? widget.args.title,
+                  style: const TextStyle(
+                      fontSize: 26, fontWeight: FontWeight.w900),
                 ),
-                _detailChip(
-                  'Type',
-                  (details?.type.isNotEmpty ?? false) ? details!.type : 'run',
+                const SizedBox(height: 8),
+                Text(
+                  details?.description.isNotEmpty == true
+                      ? details!.description
+                      : widget.args.description.isNotEmpty
+                          ? widget.args.description
+                          : 'Challenge details',
                 ),
-                _detailChip(
-                  'Target',
-                  details != null && details.targetValue > 0
-                      ? details.targetValue.toStringAsFixed(0)
-                      : '--',
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!,
+                      style: const TextStyle(color: Colors.redAccent)),
+                ],
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _detailChip(
+                      'Status',
+                      (details?.status.isNotEmpty ?? false)
+                          ? details!.status
+                          : 'active',
+                    ),
+                    _detailChip(
+                      'Type',
+                      (details?.type.isNotEmpty ?? false)
+                          ? details!.type
+                          : 'run',
+                    ),
+                    _detailChip(
+                      'Target',
+                      details != null && details.targetValue > 0
+                          ? details.targetValue.toStringAsFixed(0)
+                          : '--',
+                    ),
+                    _detailChip(
+                        'Starts', _formatChallengeDate(details?.startAt)),
+                    _detailChip(
+                        'Ends', _formatChallengeDate(details?.endAt)),
+                  ],
                 ),
-                _detailChip('Starts', _formatChallengeDate(details?.startAt)),
-                _detailChip('Ends', _formatChallengeDate(details?.endAt)),
+                const SizedBox(height: 20),
+                // ── Participants ──────────────────────────────
+                if (completedList.isNotEmpty) ...[
+                  const Text(
+                    'Completed',
+                    style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  for (final p in completedList) ...[
+                    _participantTile(p, completed: true),
+                    const SizedBox(height: 6),
+                  ],
+                  const SizedBox(height: 12),
+                ],
+                if (joinedList.isNotEmpty) ...[
+                  const Text(
+                    'In Progress',
+                    style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  for (final p in joinedList) ...[
+                    _participantTile(p, completed: false),
+                    const SizedBox(height: 6),
+                  ],
+                ],
+                if (participants.isEmpty && !_loading)
+                  const Text(
+                    'No participants yet. Be the first to join!',
+                    style: TextStyle(color: Colors.black54),
+                  ),
               ],
             ),
-            const Spacer(),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: joined
-                    ? const Color(0xFF5A5F77)
-                    : AppPalette.primary,
-                minimumSize: const Size.fromHeight(52),
-              ),
-              onPressed: joined ? null : _joinChallenge,
-              child: Text(
-                _joining
-                    ? 'Joining...'
-                    : joined
-                    ? 'Joined'
-                    : 'Join Challenge',
-              ),
+          ),
+          // ── Action buttons ────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
+              children: [
+                if (joined && !myCompleted)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.green.shade600,
+                        minimumSize: const Size.fromHeight(52),
+                      ),
+                      onPressed: _completing ? null : _markComplete,
+                      icon: _completing
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Icon(Icons.check_circle_outline),
+                      label: Text(
+                          _completing ? 'Saving...' : 'Mark as Completed'),
+                    ),
+                  ),
+                if (joined && myCompleted)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.green.shade600,
+                        minimumSize: const Size.fromHeight(52),
+                      ),
+                      onPressed: null,
+                      icon: const Icon(Icons.check_circle),
+                      label: const Text('You Completed This'),
+                    ),
+                  ),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: joined
+                        ? Colors.grey.shade400
+                        : AppPalette.primary,
+                    minimumSize: const Size.fromHeight(52),
+                  ),
+                  onPressed: joined ? null : _joinChallenge,
+                  child: Text(
+                    _joining
+                        ? 'Joining...'
+                        : joined
+                            ? 'Joined'
+                            : 'Join Challenge',
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _participantTile(ChallengeParticipant p, {required bool completed}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: completed
+            ? Colors.green.shade50
+            : const Color(0xFFF8F9FF),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: completed
+              ? Colors.green.shade200
+              : const Color(0xFFE3E7F8),
         ),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 18,
+            backgroundColor: const Color(0xFFDCE3FF),
+            backgroundImage: p.avatarUrl.isNotEmpty
+                ? NetworkImage(p.avatarUrl)
+                : null,
+            child: p.avatarUrl.isEmpty
+                ? const Icon(Icons.person,
+                    color: AppPalette.primary, size: 18)
+                : null,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              p.displayName,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+          if (completed)
+            Icon(Icons.check_circle,
+                color: Colors.green.shade600, size: 20),
+        ],
       ),
     );
   }
@@ -902,6 +1043,11 @@ class _ClubDetailScreenState extends State<ClubDetailScreen> {
   ClubDetails? _details;
   String? _error;
 
+  List<CommunityMessage> _messages = const [];
+  bool _sendingMessage = false;
+  final _messageController = TextEditingController();
+  final _scrollController = ScrollController();
+
   @override
   void initState() {
     super.initState();
@@ -916,7 +1062,15 @@ class _ClubDetailScreenState extends State<ClubDetailScreen> {
     );
     if (widget.args.id != null) {
       unawaited(_loadDetails());
+      unawaited(_loadMessages());
     }
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadDetails() async {
@@ -940,6 +1094,49 @@ class _ClubDetailScreenState extends State<ClubDetailScreen> {
     });
   }
 
+  Future<void> _loadMessages() async {
+    final clubId = widget.args.id;
+    if (clubId == null) return;
+    final msgs = await SessionScope.of(context).loadCommunityMessages(clubId);
+    if (!mounted) return;
+    setState(() => _messages = msgs);
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  Future<void> _sendMessage() async {
+    final clubId = widget.args.id;
+    final text = _messageController.text.trim();
+    if (clubId == null || text.isEmpty || _sendingMessage) return;
+    setState(() => _sendingMessage = true);
+    final session = SessionScope.of(context);
+    final ok = await session.sendCommunityMessage(clubId, text);
+    if (!mounted) return;
+    if (ok) {
+      _messageController.clear();
+      final msgs = await session.loadCommunityMessages(clubId);
+      if (!mounted) return;
+      setState(() => _messages = msgs);
+      _scrollToBottom();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(session.lastError ?? 'Could not send message')),
+      );
+    }
+    setState(() => _sendingMessage = false);
+  }
+
   Future<void> _joinClub() async {
     final clubId = widget.args.id;
     if (clubId == null || _joining || _joined) return;
@@ -960,6 +1157,7 @@ class _ClubDetailScreenState extends State<ClubDetailScreen> {
             memberCount: current.memberCount,
             joined: true,
             createdAt: current.createdAt,
+            members: current.members,
           );
         }
       }
@@ -979,58 +1177,193 @@ class _ClubDetailScreenState extends State<ClubDetailScreen> {
     final title = details?.name ?? widget.args.name;
     final description = details?.description ?? widget.args.description;
     final memberCount = details?.memberCount ?? widget.args.memberCount;
+    final members = details?.members ?? const [];
+    final myId = SessionScope.of(context).currentUserId;
+
     return ShellScaffold(
       title: title,
       showBack: true,
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_loading)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 12),
-                child: LinearProgressIndicator(),
-              ),
-            Text(
-              title,
-              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
-            ),
-            const SizedBox(height: 8),
-            Text(description.isNotEmpty ? description : 'Local running club'),
-            if (_error != null) ...[
-              const SizedBox(height: 10),
-              Text(_error!, style: const TextStyle(color: Colors.redAccent)),
-            ],
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView(
+              controller: _scrollController,
+              padding: const EdgeInsets.all(16),
               children: [
-                _clubChip('Members', '$memberCount'),
-                _clubChip('Status', _joined ? 'joined' : 'not joined'),
-                _clubChip('Created', _formatDate(details?.createdAt)),
+                if (_loading)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 12),
+                    child: LinearProgressIndicator(),
+                  ),
+                Text(
+                  title,
+                  style: const TextStyle(
+                      fontSize: 26, fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 8),
+                Text(description.isNotEmpty
+                    ? description
+                    : 'Local running club'),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!,
+                      style: const TextStyle(color: Colors.redAccent)),
+                ],
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _clubChip('Members', '$memberCount'),
+                    _clubChip('Status', _joined ? 'Joined' : 'Not joined'),
+                    _clubChip('Created', _formatDate(details?.createdAt)),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Members',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 10),
+                if (members.isEmpty && !_loading)
+                  const Text(
+                    'No members yet.',
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                for (final m in members) ...[
+                  _clubMemberTile(member: m),
+                  const SizedBox(height: 8),
+                ],
+                const SizedBox(height: 20),
+                const Text(
+                  'Club Chat',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 10),
+                if (_messages.isEmpty)
+                  const Text(
+                    'No messages yet. Say hello!',
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                for (final msg in _messages) ...[
+                  _ClubMessageBubble(message: msg, isMe: msg.userId == myId),
+                  const SizedBox(height: 6),
+                ],
+                const SizedBox(height: 4),
               ],
             ),
-            const Spacer(),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: _joined
-                    ? const Color(0xFF5A5F77)
-                    : AppPalette.primary,
-                minimumSize: const Size.fromHeight(52),
-              ),
-              onPressed: _joined ? null : _joinClub,
-              child: Text(
-                _joining
-                    ? 'Joining...'
-                    : _joined
-                    ? 'Joined'
-                    : 'Join Club',
+          ),
+          // ── Pinned message input ──────────────────────────
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              border: Border(top: BorderSide(color: Color(0xFFE3E7F8))),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _messageController,
+                    textCapitalization: TextCapitalization.sentences,
+                    decoration: InputDecoration(
+                      hintText: 'Message the club...',
+                      filled: true,
+                      fillColor: const Color(0xFFF3F5FE),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onSubmitted: (_) => _sendMessage(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  style: IconButton.styleFrom(
+                      backgroundColor: AppPalette.primary),
+                  onPressed: _sendingMessage ? null : _sendMessage,
+                  icon: _sendingMessage
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.send_rounded, color: Colors.white),
+                ),
+              ],
+            ),
+          ),
+          // ── Join button (only when not a member) ──────────
+          if (!_joined)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppPalette.primary,
+                  minimumSize: const Size.fromHeight(52),
+                ),
+                onPressed: _joining ? null : _joinClub,
+                child: Text(_joining ? 'Joining...' : 'Join Club'),
               ),
             ),
-          ],
-        ),
+        ],
+      ),
+    );
+  }
+
+  Widget _clubMemberTile({required ClubMember member}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8F9FF),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE3E7F8)),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 20,
+            backgroundColor: const Color(0xFFDCE3FF),
+            backgroundImage: member.avatarUrl.isNotEmpty
+                ? NetworkImage(member.avatarUrl)
+                : null,
+            child: member.avatarUrl.isEmpty
+                ? const Icon(Icons.person,
+                    color: AppPalette.primary, size: 20)
+                : null,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              member.displayName,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: member.role == 'owner'
+                  ? AppPalette.primary.withValues(alpha: 0.12)
+                  : const Color(0xFFEEF0FF),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              member.role[0].toUpperCase() + member.role.substring(1),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: member.role == 'owner'
+                    ? AppPalette.primary
+                    : Colors.black54,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1055,6 +1388,85 @@ class _ClubDetailScreenState extends State<ClubDetailScreen> {
     final month = d.month.toString().padLeft(2, '0');
     final day = d.day.toString().padLeft(2, '0');
     return '${d.year}-$month-$day';
+  }
+}
+
+class _ClubMessageBubble extends StatelessWidget {
+  const _ClubMessageBubble({required this.message, required this.isMe});
+
+  final CommunityMessage message;
+  final bool isMe;
+
+  @override
+  Widget build(BuildContext context) {
+    final local = message.createdAt.toLocal();
+    final time =
+        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    return Row(
+      mainAxisAlignment:
+          isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        if (!isMe) ...[
+          CircleAvatar(
+            radius: 14,
+            backgroundColor: const Color(0xFFDCE3FF),
+            backgroundImage: message.avatarUrl.isNotEmpty
+                ? NetworkImage(message.avatarUrl)
+                : null,
+            child: message.avatarUrl.isEmpty
+                ? const Icon(Icons.person, color: AppPalette.primary, size: 14)
+                : null,
+          ),
+          const SizedBox(width: 6),
+        ],
+        Flexible(
+          child: Column(
+            crossAxisAlignment:
+                isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: [
+              if (!isMe)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4, bottom: 2),
+                  child: Text(
+                    message.displayName,
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.black54),
+                  ),
+                ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isMe ? AppPalette.primary : const Color(0xFFF0F2FF),
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(16),
+                    topRight: const Radius.circular(16),
+                    bottomLeft: Radius.circular(isMe ? 16 : 4),
+                    bottomRight: Radius.circular(isMe ? 4 : 16),
+                  ),
+                ),
+                child: Text(
+                  message.content,
+                  style: TextStyle(
+                    color: isMe ? Colors.white : Colors.black87,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 2, left: 4, right: 4),
+                child: Text(time,
+                    style: const TextStyle(fontSize: 10, color: Colors.black38)),
+              ),
+            ],
+          ),
+        ),
+        if (isMe) const SizedBox(width: 4),
+      ],
+    );
   }
 }
 

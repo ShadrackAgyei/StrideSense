@@ -11,6 +11,7 @@ class _CommunityTabState extends State<CommunityTab> {
   bool _loading = true;
   List<ChallengeSummary> _challenges = const [];
   List<ClubSummary> _clubs = const [];
+  List<CommunityMember> _members = const [];
   bool _didLoad = false;
   bool _wasAuthenticated = false;
 
@@ -23,7 +24,6 @@ class _CommunityTabState extends State<CommunityTab> {
       _wasAuthenticated = session.isAuthenticated;
       unawaited(_loadData());
     } else if (session.isAuthenticated && !_wasAuthenticated) {
-      // Auth became available after initial load — fetch real data now
       _wasAuthenticated = true;
       unawaited(_loadData());
     }
@@ -31,12 +31,16 @@ class _CommunityTabState extends State<CommunityTab> {
 
   Future<void> _loadData() async {
     final session = SessionScope.of(context);
-    final challenges = await session.loadChallenges();
-    final clubs = await session.loadClubs();
+    final results = await Future.wait([
+      session.loadChallenges(),
+      session.loadClubs(),
+      session.loadCommunityMembers(),
+    ]);
     if (!mounted) return;
     setState(() {
-      _challenges = challenges;
-      _clubs = clubs;
+      _challenges = results[0] as List<ChallengeSummary>;
+      _clubs = results[1] as List<ClubSummary>;
+      _members = results[2] as List<CommunityMember>;
       _loading = false;
     });
   }
@@ -55,10 +59,7 @@ class _CommunityTabState extends State<CommunityTab> {
           const SizedBox(height: 6),
           const Text(
             'Discover rankings, challenges, and club activity.',
-            style: TextStyle(
-              color: Colors.black54,
-              fontWeight: FontWeight.w600,
-            ),
+            style: TextStyle(color: Colors.black54, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 14),
           Row(
@@ -191,6 +192,68 @@ class _CommunityTabState extends State<CommunityTab> {
               if (i < 2 && i < _clubs.length - 1) const SizedBox(height: 8),
             ],
           ],
+          const SizedBox(height: 16),
+          const Text(
+            'Members',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+          ),
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          if (!_loading && _members.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: _CommunityItem(
+                icon: Icons.person_outline,
+                title: 'No members yet',
+                subtitle: 'Be the first to join!',
+              ),
+            ),
+          if (!_loading)
+            for (var i = 0; i < _members.length; i++) ...[
+              const SizedBox(height: 8),
+              _MemberTile(member: _members[i]),
+            ],
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+}
+
+class _MemberTile extends StatelessWidget {
+  const _MemberTile({required this.member});
+
+  final CommunityMember member;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8F9FF),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE3E7F8)),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 20,
+            backgroundColor: const Color(0xFFDCE3FF),
+            backgroundImage: member.avatarUrl.isNotEmpty
+                ? NetworkImage(member.avatarUrl)
+                : null,
+            child: member.avatarUrl.isEmpty
+                ? const Icon(Icons.person, color: AppPalette.primary, size: 20)
+                : null,
+          ),
+          const SizedBox(width: 12),
+          Text(
+            member.displayName,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
         ],
       ),
     );

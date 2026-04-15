@@ -20,6 +20,8 @@ class SessionController extends ChangeNotifier {
   DashboardSummary dashboard = DashboardSummary.defaults;
   String? lastError;
 
+  String get currentUserId => supabase.auth.currentUser?.id ?? '';
+
   void setPendingDestination(String route, {Object? arguments}) {
     _pending = PendingDestination(route, arguments: arguments);
   }
@@ -349,6 +351,58 @@ class SessionController extends ChangeNotifier {
     } catch (e) {
       lastError = _readError(e);
       notifyListeners();
+      return const [];
+    }
+  }
+
+  Future<bool> markChallengeCompleted(int challengeId) async {
+    if (!isAuthenticated) return false;
+    try {
+      await _withAuthRetry(
+        (token) =>
+            _apiClient.markChallengeCompleted(challengeId: challengeId),
+      );
+      return true;
+    } catch (e) {
+      lastError = _readError(e);
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<List<CommunityMessage>> loadCommunityMessages(int clubId) async {
+    if (!isAuthenticated) return const [];
+    try {
+      return await _withAuthRetry(
+        (token) => _apiClient.getCommunityMessages(clubId: clubId),
+      );
+    } catch (e) {
+      return const [];
+    }
+  }
+
+  Future<bool> sendCommunityMessage(int clubId, String content) async {
+    if (!isAuthenticated) return false;
+    try {
+      await _withAuthRetry(
+        (token) =>
+            _apiClient.postCommunityMessage(clubId: clubId, content: content),
+      );
+      return true;
+    } catch (e) {
+      lastError = _readError(e);
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<List<CommunityMember>> loadCommunityMembers() async {
+    if (!isAuthenticated) return const [];
+    try {
+      return await _withAuthRetry(
+        (token) => _apiClient.getCommunityMembers(),
+      );
+    } catch (e) {
       return const [];
     }
   }
@@ -778,6 +832,80 @@ class ChallengeSummary {
   }
 }
 
+class ChallengeParticipant {
+  const ChallengeParticipant({
+    required this.userId,
+    required this.displayName,
+    this.avatarUrl = '',
+    this.completedAt,
+  });
+
+  final String userId;
+  final String displayName;
+  final String avatarUrl;
+  final DateTime? completedAt;
+
+  bool get completed => completedAt != null;
+
+  static ChallengeParticipant fromJson(Map<String, dynamic> json) {
+    final profile =
+        (json['profiles'] as Map?)?.cast<String, dynamic>() ?? {};
+    final first = ((profile['first_name'] as String?) ?? '').trim();
+    final last = ((profile['last_name'] as String?) ?? '').trim();
+    final username = (profile['username'] as String?) ?? '';
+    final full = '$first $last'.trim();
+    return ChallengeParticipant(
+      userId: (json['user_id'] as String?) ?? '',
+      displayName: full.isNotEmpty
+          ? full
+          : username.isNotEmpty
+              ? username
+              : 'Runner',
+      avatarUrl: (profile['avatar_url'] as String?) ?? '',
+      completedAt: _parseServerDate(json['completed_at']),
+    );
+  }
+}
+
+class CommunityMessage {
+  const CommunityMessage({
+    required this.id,
+    required this.userId,
+    required this.displayName,
+    required this.content,
+    required this.createdAt,
+    this.avatarUrl = '',
+  });
+
+  final int id;
+  final String userId;
+  final String displayName;
+  final String content;
+  final DateTime createdAt;
+  final String avatarUrl;
+
+  static CommunityMessage fromJson(Map<String, dynamic> json) {
+    final profile =
+        (json['profiles'] as Map?)?.cast<String, dynamic>() ?? {};
+    final first = ((profile['first_name'] as String?) ?? '').trim();
+    final last = ((profile['last_name'] as String?) ?? '').trim();
+    final username = (profile['username'] as String?) ?? '';
+    final full = '$first $last'.trim();
+    return CommunityMessage(
+      id: _asInt(json['id']),
+      userId: (json['user_id'] as String?) ?? '',
+      displayName: full.isNotEmpty
+          ? full
+          : username.isNotEmpty
+              ? username
+              : 'Runner',
+      content: (json['content'] as String?) ?? '',
+      createdAt: _parseServerDate(json['created_at']) ?? DateTime.now(),
+      avatarUrl: (profile['avatar_url'] as String?) ?? '',
+    );
+  }
+}
+
 class ChallengeDetails {
   const ChallengeDetails({
     required this.id,
@@ -790,6 +918,8 @@ class ChallengeDetails {
     required this.endAt,
     required this.status,
     required this.joined,
+    this.myCompletedAt,
+    this.participants = const [],
   });
 
   final int id;
@@ -802,6 +932,10 @@ class ChallengeDetails {
   final DateTime? endAt;
   final String status;
   final bool joined;
+  final DateTime? myCompletedAt;
+  final List<ChallengeParticipant> participants;
+
+  bool get myCompleted => myCompletedAt != null;
 
   static ChallengeDetails fromJson(Map<String, dynamic> json) {
     return ChallengeDetails(
@@ -845,6 +979,67 @@ class ClubSummary {
   }
 }
 
+class ClubMember {
+  const ClubMember({
+    required this.userId,
+    required this.displayName,
+    required this.role,
+    this.avatarUrl = '',
+  });
+
+  final String userId;
+  final String displayName;
+  final String role;
+  final String avatarUrl;
+
+  static ClubMember fromJson(Map<String, dynamic> json) {
+    final profile =
+        (json['profiles'] as Map?)?.cast<String, dynamic>() ?? {};
+    final first = ((profile['first_name'] as String?) ?? '').trim();
+    final last = ((profile['last_name'] as String?) ?? '').trim();
+    final username = (profile['username'] as String?) ?? '';
+    final full = '$first $last'.trim();
+    return ClubMember(
+      userId: (json['user_id'] as String?) ?? '',
+      displayName: full.isNotEmpty
+          ? full
+          : username.isNotEmpty
+              ? username
+              : 'Runner',
+      role: (json['role'] as String?) ?? 'member',
+      avatarUrl: (profile['avatar_url'] as String?) ?? '',
+    );
+  }
+}
+
+class CommunityMember {
+  const CommunityMember({
+    required this.userId,
+    required this.displayName,
+    this.avatarUrl = '',
+  });
+
+  final String userId;
+  final String displayName;
+  final String avatarUrl;
+
+  static CommunityMember fromJson(Map<String, dynamic> json) {
+    final first = ((json['first_name'] as String?) ?? '').trim();
+    final last = ((json['last_name'] as String?) ?? '').trim();
+    final username = (json['username'] as String?) ?? '';
+    final full = '$first $last'.trim();
+    return CommunityMember(
+      userId: (json['id'] as String?) ?? '',
+      displayName: full.isNotEmpty
+          ? full
+          : username.isNotEmpty
+              ? username
+              : 'Runner',
+      avatarUrl: (json['avatar_url'] as String?) ?? '',
+    );
+  }
+}
+
 class ClubDetails {
   const ClubDetails({
     required this.id,
@@ -853,6 +1048,7 @@ class ClubDetails {
     required this.memberCount,
     required this.joined,
     required this.createdAt,
+    this.members = const [],
   });
 
   final int id;
@@ -861,6 +1057,7 @@ class ClubDetails {
   final int memberCount;
   final bool joined;
   final DateTime? createdAt;
+  final List<ClubMember> members;
 
   static ClubDetails fromJson(Map<String, dynamic> json) {
     return ClubDetails(
@@ -1406,15 +1603,78 @@ class BackendApiClient {
         .select()
         .eq('id', challengeId)
         .single();
-    final joined = await supabase
+    final participantsRaw = await supabase
         .from('challenge_participants')
-        .select('id')
-        .eq('challenge_id', challengeId)
-        .eq('user_id', user.id)
-        .maybeSingle();
+        .select(
+          'user_id, completed_at, profiles(first_name, last_name, username, avatar_url)',
+        )
+        .eq('challenge_id', challengeId);
     final row = challenge.cast<String, dynamic>();
-    row['joined'] = joined != null;
-    return ChallengeDetails.fromJson(row);
+    final myRow = participantsRaw
+        .whereType<Map>()
+        .where((p) => p['user_id'] == user.id)
+        .firstOrNull;
+    row['joined'] = myRow != null;
+    final participants = participantsRaw
+        .whereType<Map>()
+        .map((p) =>
+            ChallengeParticipant.fromJson(p.cast<String, dynamic>()))
+        .toList();
+    final base = ChallengeDetails.fromJson(row);
+    return ChallengeDetails(
+      id: base.id,
+      clubId: base.clubId,
+      title: base.title,
+      description: base.description,
+      type: base.type,
+      targetValue: base.targetValue,
+      startAt: base.startAt,
+      endAt: base.endAt,
+      status: base.status,
+      joined: base.joined,
+      myCompletedAt: myRow != null
+          ? _parseServerDate(myRow['completed_at'])
+          : null,
+      participants: participants,
+    );
+  }
+
+  Future<void> markChallengeCompleted({required int challengeId}) async {
+    final user = _requireUser();
+    await supabase
+        .from('challenge_participants')
+        .update({'completed_at': DateTime.now().toUtc().toIso8601String()})
+        .eq('challenge_id', challengeId)
+        .eq('user_id', user.id);
+  }
+
+  Future<List<CommunityMessage>> getCommunityMessages({
+    required int clubId,
+  }) async {
+    final rows = await supabase
+        .from('community_messages')
+        .select(
+          'id, user_id, content, created_at, profiles(first_name, last_name, username, avatar_url)',
+        )
+        .eq('club_id', clubId)
+        .order('created_at', ascending: true)
+        .limit(100);
+    return rows
+        .whereType<Map>()
+        .map((r) => CommunityMessage.fromJson(r.cast<String, dynamic>()))
+        .toList();
+  }
+
+  Future<void> postCommunityMessage({
+    required int clubId,
+    required String content,
+  }) async {
+    final user = _requireUser();
+    await supabase.from('community_messages').insert({
+      'club_id': clubId,
+      'user_id': user.id,
+      'content': content.trim(),
+    });
   }
 
   Future<List<ClubSummary>> getClubs({required String accessToken}) async {
@@ -1462,16 +1722,40 @@ class BackendApiClient {
   }) async {
     final user = _requireUser();
     final club = await supabase.from('clubs').select().eq('id', clubId).single();
-    final members = await supabase
+    final membersRaw = await supabase
         .from('club_members')
-        .select('user_id')
+        .select('user_id, role, profiles(first_name, last_name, username, avatar_url)')
         .eq('club_id', clubId);
     final row = club.cast<String, dynamic>();
-    row['member_count'] = members.length;
-    row['joined'] = members
+    row['member_count'] = membersRaw.length;
+    row['joined'] = membersRaw
         .whereType<Map>()
-        .any((member) => member['user_id'] == user.id);
-    return ClubDetails.fromJson(row);
+        .any((m) => m['user_id'] == user.id);
+    final base = ClubDetails.fromJson(row);
+    final members = membersRaw
+        .whereType<Map>()
+        .map((m) => ClubMember.fromJson(m.cast<String, dynamic>()))
+        .toList();
+    return ClubDetails(
+      id: base.id,
+      name: base.name,
+      description: base.description,
+      memberCount: base.memberCount,
+      joined: base.joined,
+      createdAt: base.createdAt,
+      members: members,
+    );
+  }
+
+  Future<List<CommunityMember>> getCommunityMembers() async {
+    final profiles = await supabase
+        .from('profiles')
+        .select('id, first_name, last_name, username, avatar_url')
+        .limit(100);
+    return profiles
+        .whereType<Map>()
+        .map((p) => CommunityMember.fromJson(p.cast<String, dynamic>()))
+        .toList();
   }
 
   Future<void> createClub({

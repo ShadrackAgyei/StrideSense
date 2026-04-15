@@ -47,7 +47,31 @@ class _HomeTabState extends State<HomeTab> {
         ? session.profile.firstName.trim()
         : 'Runner';
     final dashboard = session.dashboard;
-    final recentActivities = dashboard.recentWorkouts
+
+    // Day-specific filtering
+    final selectedDate = days[_selectedDay].dateTime;
+    final dayWorkouts = dashboard.recentWorkouts.where((w) {
+      if (w.startedAt == null) return false;
+      final d = w.startedAt!.toLocal();
+      return d.year == selectedDate.year &&
+          d.month == selectedDate.month &&
+          d.day == selectedDate.day;
+    }).toList();
+
+    final dayDistanceKm =
+        dayWorkouts.fold(0.0, (sum, w) => sum + w.distanceM) / 1000;
+    final dayWorkoutCount = dayWorkouts.length;
+    final pacedWorkouts =
+        dayWorkouts.where((w) => w.avgPaceSecPerKm > 0).toList();
+    final dayAvgPaceSecPerKm = pacedWorkouts.isEmpty
+        ? 0.0
+        : pacedWorkouts.fold(0.0, (s, w) => s + w.avgPaceSecPerKm) /
+            pacedWorkouts.length;
+    final bestRunKm = dayWorkouts.isEmpty
+        ? 0.0
+        : dayWorkouts.map((w) => w.distanceM).reduce(math.max) / 1000;
+
+    final recentActivities = dayWorkouts
         .map(
           (w) => _ActivityItem(
             title: w.category.isNotEmpty ? w.category : 'Workout',
@@ -163,9 +187,9 @@ class _HomeTabState extends State<HomeTab> {
               ),
             ),
             const SizedBox(height: 18),
-            const Text(
-              'Your Progress',
-              style: TextStyle(fontSize: 27, fontWeight: FontWeight.w900),
+            Text(
+              'Progress · ${days[_selectedDay].label} ${days[_selectedDay].date}',
+              style: const TextStyle(fontSize: 27, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 12),
             Row(
@@ -174,8 +198,12 @@ class _HomeTabState extends State<HomeTab> {
                 Expanded(
                   child: _ProgressCard(
                     title: 'Distance',
-                    value: '${dashboard.totalDistanceKm.toStringAsFixed(1)} km',
-                    subtitle: '${dashboard.workoutsCount} workouts completed',
+                    value: dayDistanceKm > 0
+                        ? '${dayDistanceKm.toStringAsFixed(2)} km'
+                        : '-- km',
+                    subtitle: dayWorkoutCount == 0
+                        ? 'No runs this day'
+                        : '$dayWorkoutCount run${dayWorkoutCount == 1 ? '' : 's'} logged',
                     icon: Icons.straighten,
                     height: 212,
                   ),
@@ -185,18 +213,19 @@ class _HomeTabState extends State<HomeTab> {
                   child: Column(
                     children: [
                       _ProgressCard(
-                        title: 'Top Performance',
-                        value:
-                            '${dashboard.weeklyDistanceKm.toStringAsFixed(1)} km',
-                        subtitle: 'Last 7 days',
+                        title: 'Best Run',
+                        value: bestRunKm > 0
+                            ? '${bestRunKm.toStringAsFixed(2)} km'
+                            : '-- km',
+                        subtitle: 'Longest run this day',
                         icon: Icons.workspace_premium_outlined,
                         compact: true,
                       ),
-                      SizedBox(height: 12),
+                      const SizedBox(height: 12),
                       _ProgressCard(
-                        title: 'Weekly Pace',
-                        value: _formatPace(dashboard.weeklyAvgPaceSecPerKm),
-                        subtitle: 'Average this week',
+                        title: 'Avg Pace',
+                        value: _formatPace(dayAvgPaceSecPerKm),
+                        subtitle: 'Average this day',
                         icon: Icons.speed_outlined,
                         compact: true,
                       ),
@@ -209,7 +238,7 @@ class _HomeTabState extends State<HomeTab> {
             Row(
               children: [
                 const Text(
-                  'Recent Activity',
+                  "Day's Activity",
                   style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
                 ),
                 const Spacer(),
@@ -229,18 +258,18 @@ class _HomeTabState extends State<HomeTab> {
                   AppRoutes.workoutSummary,
                   arguments: WorkoutSummaryArgs(
                     originTab: AppTab.home,
-                    workout: dashboard.recentWorkouts[i],
+                    workout: dayWorkouts[i],
                   ),
                 ),
               ),
               if (i != recentActivities.length - 1) const SizedBox(height: 10),
             ],
             if (recentActivities.isEmpty)
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
                 child: Text(
-                  'No workouts yet. Start your first run from Record.',
-                  style: TextStyle(color: Colors.black54),
+                  'No runs on ${days[_selectedDay].label} ${days[_selectedDay].date}.',
+                  style: const TextStyle(color: Colors.black54),
                 ),
               ),
           ],
@@ -268,7 +297,11 @@ class _HomeTabState extends State<HomeTab> {
     final start = now.subtract(const Duration(days: _dayWindowBefore));
     return List.generate(_dayWindowBefore + _dayWindowAfter + 1, (index) {
       final date = start.add(Duration(days: index));
-      return _DayItem(label: _weekdayLabel(date.weekday), date: '${date.day}');
+      return _DayItem(
+        label: _weekdayLabel(date.weekday),
+        date: '${date.day}',
+        dateTime: DateTime(date.year, date.month, date.day),
+      );
     });
   }
 
@@ -450,10 +483,11 @@ class _ActivityTile extends StatelessWidget {
 }
 
 class _DayItem {
-  const _DayItem({required this.label, required this.date});
+  const _DayItem({required this.label, required this.date, required this.dateTime});
 
   final String label;
   final String date;
+  final DateTime dateTime;
 }
 
 class _ActivityItem {
